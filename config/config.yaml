@@ -1,0 +1,20 @@
+Configuration
+profile: balanced
+
+llm:
+provider: ollama
+model: qwen2.5:7b
+
+mode: strict
+
+default_resume: backend
+
+latex_engine: pdflatex
+
+max_revisions: 3
+
+output_directory: output
+
+generate_report: true
+
+generate_diff: true
