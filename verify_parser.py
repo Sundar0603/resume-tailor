@@ -1,6 +1,5 @@
 import sys
 import json
-import dataclasses
 from pathlib import Path
 sys.path.insert(0, '.')
 
@@ -16,7 +15,7 @@ def log(text=''):
 
 
 def print_resume(resume):
-    text = json.dumps(dataclasses.asdict(resume), indent=2)
+    text = json.dumps(resume.model_dump(), indent=2)
     log(text)
     log()
 

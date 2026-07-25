@@ -86,6 +86,15 @@ class ResumeParser:
         education_body = self._require_section(sections, "education", "Education")
         education = self._education_parser.parse(education_body)
 
+        for i, skill in enumerate(skills, start=1):
+            skill.id = f"skill_{i:03d}"
+        for i, exp in enumerate(experiences, start=1):
+            exp.id = f"exp_{i:03d}"
+        for i, proj in enumerate(projects, start=1):
+            proj.id = f"proj_{i:03d}"
+        for i, edu in enumerate(education, start=1):
+            edu.id = f"edu_{i:03d}"
+
         return Resume(
             metadata=metadata,
             contact=contact,
