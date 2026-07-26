@@ -5,8 +5,16 @@ These Pydantic models represent the in-memory structure of a parsed resume.
 They are pure data containers — no validation, no rendering logic.
 """
 
+from enum import Enum
 from typing import List, Optional
 from pydantic import BaseModel, ConfigDict
+
+
+class EntitySource(str, Enum):
+    """Indicates the origin of a resume entity."""
+
+    CANONICAL = "CANONICAL"
+    GENERATED = "GENERATED"
 
 
 class Metadata(BaseModel):
@@ -40,6 +48,7 @@ class SkillCategory(BaseModel):
     )
 
     id: str = ""
+    source: EntitySource = EntitySource.CANONICAL
     category: str
     skills: List[str] = []
 
@@ -55,6 +64,7 @@ class Experience(BaseModel):
     )
 
     id: str = ""
+    source: EntitySource = EntitySource.CANONICAL
     company: str
     role: str
     employment_type: str
@@ -76,6 +86,7 @@ class Project(BaseModel):
     )
 
     id: str = ""
+    source: EntitySource = EntitySource.CANONICAL
     name: str
     type: str
     repository: Optional[str] = None
@@ -95,6 +106,7 @@ class Education(BaseModel):
     )
 
     id: str = ""
+    source: EntitySource = EntitySource.CANONICAL
     institution: str
     degree: str
     major: str

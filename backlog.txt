@@ -1,0 +1,7 @@
+Validation v2
+
+- Add boundary tests
+- Add parameterized tests
+- Add determinism tests
+- Add purity tests
+- Add invalid source tests
