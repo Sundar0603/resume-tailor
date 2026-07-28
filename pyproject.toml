@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=42", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "resume-tailor"
+version = "0.1.0"
+description = "AI-powered resume tailoring CLI"
+requires-python = ">=3.9"
+dependencies = [
+    "typer",
+    "pydantic>=2",
+    "keyring",
+    "ollama",
+    "openai",
+    "anthropic",
+    "google-genai",
+    "tomli; python_version < '3.11'",
+]
+
+[project.scripts]
+resume-tailor = "src.cli.main:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = [
+    "ignore::FutureWarning:google",
+    "ignore::urllib3.exceptions.NotOpenSSLWarning",
+    "ignore::pydantic.warnings.PydanticDeprecatedSince212:google",
+    "ignore:urllib3 v2 only supports OpenSSL",
+]
