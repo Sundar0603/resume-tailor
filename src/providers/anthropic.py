@@ -5,7 +5,7 @@ Communicates with the Anthropic API via the official SDK.
 The API key is loaded from the OS credential store via CredentialManager.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import anthropic
 
@@ -58,14 +58,17 @@ class AnthropicProvider(LLMProvider):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send *prompt* to the configured Claude model and return the response.
+
+        The Anthropic API exposes no seed, and advises against setting
+        ``top_p`` and ``temperature`` together, so ``seed``, ``top_p`` and
+        ``num_ctx`` are ignored here. Reproducibility rests on
+        ``temperature = 0`` with ``top_k = 1``. There is no JSON mode
+        either; ``json_mode`` is satisfied by the analyzer prompt and its
+        tolerant response parsing.
 
         Raises
         ------
@@ -80,6 +83,14 @@ class AnthropicProvider(LLMProvider):
         ProviderError
             For any other Anthropic SDK error.
         """
+        opts = options or {}
+        system_prompt = opts.get("system_prompt")
+        temperature = opts.get("temperature", 0.0)
+        top_k = opts.get("top_k")
+        max_tokens = opts.get("max_tokens")
+        stop_sequences = opts.get("stop_sequences")
+        extra_headers = opts.get("extra_headers")
+
         # Anthropic requires max_tokens; fall back to a sensible default.
         effective_max_tokens = max_tokens if max_tokens is not None else _DEFAULT_MAX_TOKENS
 
@@ -89,6 +100,8 @@ class AnthropicProvider(LLMProvider):
             "temperature": temperature,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if top_k is not None:
+            kwargs["top_k"] = top_k
         if system_prompt:
             kwargs["system"] = system_prompt
         if stop_sequences:

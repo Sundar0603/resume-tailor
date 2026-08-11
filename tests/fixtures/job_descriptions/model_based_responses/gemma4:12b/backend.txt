@@ -1,0 +1,86 @@
+Job Analysis
+============
+
+Role
+----
+  Application Software Developer
+
+Seniority
+---------
+  IC2
+
+Required Skills
+---------------
+  • conduct testing
+  • debugging and troubleshooting
+  • develop and review code
+  • troubleshoot issues
+
+Technologies
+------------
+  • API functionality
+  • integration paths
+  • OCI/integration paths
+  • secure coding practices
+  • standard performance profiling
+
+Domains
+-------
+  • application development
+  • software development
+  • system maintenance
+
+Responsibilities
+----------------
+  • Delivers small-to-medium features end-to-end within a single application
+  • Provides production support during business hours; participates in incident rotations with guidance
+  • Troubleshoots routine and some non-routine issues across app services and straightforward OCI/integration paths
+  • Coordinates with QA/engineering on test coverage and release readiness
+  • Applies architectural guidelines; raises design questions when needed
+  • Breaks down requirements into maintainable modules and tests
+  • Integrates and documents API dependencies for assigned features
+  • Contributes input to team-level build priorities based on reliability/scalability needs
+  • References forums/live-site reports to improve acceptance criteria
+  • Collaborates with Designers/PMs/engineers to clarify requirements
+  • Contributes to designing software solutions and analyzes requirements
+  • Applies working knowledge to develop and review code for new software features and enhancements following design specifications
+  • Develops fixes for identified issues
+  • Implements software testing, quality assurance processes, software error logging, monitoring, and observability
+  • Supports the implementation of standard and non-standard performance profiling and optimization of coding
+  • Troubleshoots and resolves standard and non-standard issues related to application programming interface (API) functionality and integration
+  • Implements standard and non-standard API versioning, lifecycle, and interoperability strategies
+  • Collaborates with own team and begins to network outside of the team to understand customer use cases and align application solutions
+  • May provide technical guidance and support to customers regarding application-related issues, with limited supervision
+  • Assists peers to advocate for customers' interests and suggests product enhancements based on feedback
+  • Influences efforts to ensure customer satisfaction through timely resolution of issues and effective communication
+  • Utilizes working knowledge to implement customer issue and/or defect handling and training processes, with some guidance
+  • Collaborates with experienced colleagues to investigate and troubleshoot product maintenance issues to ensure customer agreement on short- and long-term solutions
+  • Begins to collaborate with the team to establish and follow development practices and coding standards
+  • Assists in ensuring code quality and adherence to broad acceptance criteria during development
+  • Demonstrates working knowledge of industry best practices and applies them to software development processes
+  • Assists in implementing secure coding practices to prevent security vulnerabilities
+  • Performs periodic maintenance and testing operations for systems that require upgrading or patching (e.g., for critical vulnerabilities), with limited guidance
+  • Assists in driving improvements, ensures automation, testing, and debugging of systems to ensure service/product availability, health, support, and reliability
+
+Qualifications
+--------------
+  • IC2
+
+Keywords
+--------
+  • API functionality
+  • application software development
+  • code review
+  • continuous learning
+  • customer support
+  • debugging
+  • functional testing
+  • integration paths
+  • problem solving
+  • process improvement
+  • quality assurance
+  • secure coding practices
+  • software development lifecycle
+  • system maintenance
+  • team collaboration
+  • troubleshooting

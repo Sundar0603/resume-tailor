@@ -4,12 +4,18 @@ JDAnalyzer — converts a raw job description into a structured JobAnalysis obje
 Responsibilities:
     - Accept raw job description text
     - Construct the analysis prompt
-    - Invoke the LLM provider
-    - Parse the returned JSON
+    - Invoke the LLM provider with deterministic sampling parameters
+    - Extract and parse the returned JSON
+    - Canonicalize the parsed payload
     - Validate with Pydantic
     - Return a JobAnalysis
 
-The analyzer is stateless and side-effect free.
+The analyzer is stateless, side-effect free, and deterministic: the same job
+description always yields the same JobAnalysis. Determinism is enforced in
+three places — pinned sampling parameters (:mod:`.sampling`), tolerant JSON
+extraction (:mod:`._json_extract`), and canonicalization of the parsed
+payload (:mod:`.canonical`).
+
 It does not generate resumes, score resumes, or perform ATS optimization.
 """
 
@@ -17,6 +23,8 @@ import json
 
 from pydantic import ValidationError
 
+from ._json_extract import extract_json_object
+from .canonical import canonicalize
 from .exceptions import (
     AnalyzerError,
     InvalidAnalyzerJSON,
@@ -26,6 +34,7 @@ from .exceptions import (
 from .models import JobAnalysis
 from .prompts import build_analysis_prompt
 from .provider import LLMProvider
+from .sampling import deterministic_options
 
 
 class JDAnalyzer:
@@ -59,6 +68,9 @@ class JDAnalyzer:
         """
         Analyze a raw job description and return a structured JobAnalysis.
 
+        Calling this twice with the same job description returns two equal
+        JobAnalysis objects.
+
         Parameters
         ----------
         job_description : str
@@ -83,16 +95,24 @@ class JDAnalyzer:
         prompt = build_analysis_prompt(job_description)
         raw_response = self._invoke_provider(prompt)
         data = self._parse_json(raw_response)
-        return self._validate(data)
+        return self._validate(canonicalize(data))
 
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
 
     def _invoke_provider(self, prompt: str) -> str:
-        """Invoke the LLM provider and return the raw response string."""
+        """
+        Invoke the LLM provider and return the raw response string.
+
+        The provider is always called with the full deterministic option
+        set; see :mod:`src.analyzer.sampling` for why temperature alone is
+        not enough.
+        """
         try:
-            response = self._provider.generate(prompt)
+            response = self._provider.generate(
+                prompt, options=deterministic_options()
+            )
         except AnalyzerError:
             raise
         except Exception as exc:
@@ -108,9 +128,15 @@ class JDAnalyzer:
         return response.strip()
 
     def _parse_json(self, raw_response: str) -> dict:
-        """Parse the raw response string into a dict."""
+        """
+        Parse the raw response string into a dict.
+
+        A code fence or surrounding commentary is stripped first, since a
+        model may wrap its answer on one call and not the next. Malformed
+        JSON still raises.
+        """
         try:
-            return json.loads(raw_response)
+            return json.loads(extract_json_object(raw_response))
         except json.JSONDecodeError as exc:
             raise InvalidAnalyzerJSON(
                 f"LLM response is not valid JSON: {exc}"

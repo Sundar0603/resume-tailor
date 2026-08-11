@@ -374,3 +374,33 @@ Task is complete when:
 - validation implemented
 - comprehensive unit tests pass
 - component is fully independent from resume generation
+
+---
+
+# Amendment — determinism work
+
+The "deterministic" design principle above is now enforced rather than assumed.
+Two changes deviate from the specification as originally written:
+
+**`summary` was removed from `JobAnalysis`.**
+It was the only free-text field, and generated prose is the least reproducible
+part of an analysis: two runs that extract identical facts still phrase the
+summary differently. Every remaining field is extracted verbatim from the job
+description. The validation requirement "summary exists" no longer applies;
+`role` is now additionally validated as non-empty.
+
+**Determinism is enforced in three layers.**
+
+- `src/analyzer/sampling.py` — pinned sampling parameters (temperature, top_k,
+  top_p, seed, num_ctx, max_tokens, JSON mode) sent on every provider call.
+  The provider option contract in `src/analyzer/provider.py` documents them;
+  each provider translates what it supports and ignores the rest.
+- `src/analyzer/_json_extract.py` — tolerant extraction of the JSON object, so
+  a code fence or a stray sentence does not turn a good answer into an error.
+- `src/analyzer/canonical.py` — canonicalization of the parsed payload:
+  set-like fields sorted, prose fields deduplicated in job description order,
+  whitespace and punctuation normalised, null-equivalents collapsed.
+
+Offline coverage is in `tests/analyzer/test_determinism.py`. A live check
+against the configured provider is available via
+`python tests/analyzer/verify_determinism.py --jd <path> --iterations 5`.

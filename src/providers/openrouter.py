@@ -6,7 +6,7 @@ reuses the OpenAI SDK pointed at OpenRouter's base URL.
 The API key is loaded from the OS credential store via CredentialManager.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import openai
 
@@ -64,14 +64,13 @@ class OpenRouterProvider(LLMProvider):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send *prompt* to the configured model via OpenRouter and return the response.
+
+        OpenRouter accepts the OpenAI parameter set plus ``top_k``, which it
+        forwards only to models that support it. ``num_ctx`` is ignored.
 
         Raises
         ------
@@ -86,6 +85,17 @@ class OpenRouterProvider(LLMProvider):
         ProviderError
             For any other SDK error.
         """
+        opts = options or {}
+        system_prompt = opts.get("system_prompt")
+        temperature = opts.get("temperature", 0.0)
+        top_p = opts.get("top_p")
+        top_k = opts.get("top_k")
+        seed = opts.get("seed")
+        max_tokens = opts.get("max_tokens")
+        stop_sequences = opts.get("stop_sequences")
+        extra_headers = opts.get("extra_headers")
+        json_mode = opts.get("json_mode", False)
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -96,12 +106,21 @@ class OpenRouterProvider(LLMProvider):
             "messages": messages,
             "temperature": temperature,
         }
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if seed is not None:
+            kwargs["seed"] = seed
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
         if stop_sequences:
             kwargs["stop"] = stop_sequences
         if extra_headers:
             kwargs["extra_headers"] = extra_headers
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
+        if top_k is not None:
+            # Not part of the OpenAI schema; OpenRouter reads it from the body.
+            kwargs["extra_body"] = {"top_k": top_k}
 
         try:
             response = self._client.chat.completions.create(**kwargs)

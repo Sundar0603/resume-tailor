@@ -194,9 +194,8 @@ def _run_smoke_test(
     try:
         provider = ProviderFactory.create(config, credential_manager)
         response = provider.generate(
-            prompt=_USER_PROMPT,
-            system_prompt=_SYSTEM_PROMPT,
-            temperature=0.0,
+            _USER_PROMPT,
+            options={"system_prompt": _SYSTEM_PROMPT, "temperature": 0.0},
         )
     except AuthenticationError as exc:
         _print_failure("Failed to connect")

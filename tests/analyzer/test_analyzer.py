@@ -3,12 +3,16 @@ Unit tests for the Job Description Analyzer.
 
 Covers:
     Valid cases   — complete JD, short JD, JD without company, JD with minimal requirements
-    Invalid cases — malformed JSON, missing role, missing summary, invalid schema, provider failure
+    Invalid cases — malformed JSON, missing role, invalid schema, provider failure
     Parsing       — JSON correctly becomes JobAnalysis
     Validation    — invalid responses raise appropriate exceptions
+
+Determinism is covered separately in test_determinism.py.
 """
 
 import json
+from typing import Any, Dict, Optional
+
 import pytest
 
 from src.analyzer import (
@@ -33,7 +37,11 @@ class FakeProvider(LLMProvider):
     def __init__(self, response: str) -> None:
         self._response = response
 
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> str:
         return self._response
 
 
@@ -43,7 +51,11 @@ class FailingProvider(LLMProvider):
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
 
-    def generate(self, prompt: str) -> str:
+    def generate(
+        self,
+        prompt: str,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> str:
         raise self._exc
 
 
@@ -61,25 +73,31 @@ def _json(data: dict) -> str:
 
 
 def _complete_payload() -> dict:
+    """
+    A complete payload that is already canonical.
+
+    Set-like fields are sorted and free of trailing punctuation, so the
+    assertions below can compare against the payload directly. Payloads that
+    are *not* canonical are exercised in test_determinism.py.
+    """
     return {
         "company": "Acme Corp",
         "role": "Senior Software Engineer",
         "seniority": "Senior",
-        "summary": "We are looking for a Senior Software Engineer to join our platform team.",
-        "required_skills": ["Python", "REST APIs", "PostgreSQL"],
+        "required_skills": ["PostgreSQL", "Python", "REST APIs"],
         "preferred_skills": ["Kubernetes", "Terraform"],
-        "technologies": ["Python", "FastAPI", "PostgreSQL", "Docker", "Kubernetes"],
-        "domains": ["FinTech", "Backend"],
+        "technologies": ["Docker", "FastAPI", "Kubernetes", "PostgreSQL", "Python"],
+        "domains": ["Backend", "FinTech"],
         "responsibilities": [
-            "Design and build scalable backend services.",
-            "Collaborate with cross-functional teams.",
+            "Design and build scalable backend services",
+            "Collaborate with cross-functional teams",
         ],
         "qualifications": [
-            "5+ years of software engineering experience.",
-            "Bachelor's degree in Computer Science or equivalent.",
+            "5+ years of software engineering experience",
+            "Bachelor's degree in Computer Science or equivalent",
         ],
-        "nice_to_have": ["Experience with event-driven architectures."],
-        "keywords": ["Python", "FastAPI", "FinTech", "Senior", "Backend"],
+        "nice_to_have": ["Experience with event-driven architectures"],
+        "keywords": ["Backend", "FastAPI", "FinTech", "Python", "Senior"],
     }
 
 
@@ -100,7 +118,6 @@ def _minimal_payload() -> dict:
         "company": None,
         "role": "Software Engineer",
         "seniority": None,
-        "summary": "Looking for a software engineer.",
         "required_skills": ["Python"],
         "preferred_skills": [],
         "technologies": [],
@@ -198,9 +215,19 @@ class TestInvalidCases:
         with pytest.raises(JobAnalysisValidationError):
             analyzer.analyze("Some JD.")
 
-    def test_missing_summary(self):
+    def test_summary_is_rejected_as_an_unknown_field(self):
+        # `summary` was removed from JobAnalysis: free-form prose is the
+        # least reproducible part of an analysis. A model that still emits
+        # one must fail rather than have it silently dropped.
         payload = _complete_payload()
-        del payload["summary"]
+        payload["summary"] = "We are looking for a Senior Software Engineer."
+        analyzer = _analyzer(_json(payload))
+        with pytest.raises(JobAnalysisValidationError):
+            analyzer.analyze("Some JD.")
+
+    def test_empty_role(self):
+        payload = _complete_payload()
+        payload["role"] = "   "
         analyzer = _analyzer(_json(payload))
         with pytest.raises(JobAnalysisValidationError):
             analyzer.analyze("Some JD.")
@@ -272,7 +299,6 @@ class TestParsing:
         assert result.company == payload["company"]
         assert result.role == payload["role"]
         assert result.seniority == payload["seniority"]
-        assert result.summary == payload["summary"]
         assert result.required_skills == payload["required_skills"]
         assert result.preferred_skills == payload["preferred_skills"]
         assert result.technologies == payload["technologies"]

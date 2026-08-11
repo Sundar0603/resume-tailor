@@ -16,7 +16,7 @@ Covers:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -52,11 +52,7 @@ class FakeProvider(LLMProvider):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         return self._response
 
@@ -70,11 +66,7 @@ class FailingProvider(LLMProvider):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         raise self._exc
 
@@ -370,13 +362,13 @@ class TestIntegration:
 
         generate_spy.assert_called_once()
         call_args = generate_spy.call_args
-        kwargs = call_args[1] if call_args[1] else {}
         args = call_args[0] if call_args[0] else ()
+        kwargs = call_args[1] if call_args[1] else {}
+        options = kwargs.get("options") or (args[1] if len(args) > 1 else {})
         # system_prompt must contain the diagnostic text
-        system_prompt = kwargs.get("system_prompt", "")
-        assert "Resume Tailor is working" in system_prompt
+        assert "Resume Tailor is working" in options.get("system_prompt", "")
         # temperature must be 0.0
-        assert kwargs.get("temperature") == 0.0
+        assert options.get("temperature") == 0.0
 
     def test_provider_factory_create_called_with_config_and_credentials(
         self, config_file

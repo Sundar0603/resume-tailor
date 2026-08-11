@@ -27,6 +27,7 @@ from src.providers.base import (
     ProviderResponseError,
     RateLimitError,
 )
+from src.analyzer.sampling import DETERMINISTIC_OPTIONS, deterministic_options
 from src.providers.gemini import GeminiProvider
 
 
@@ -162,3 +163,51 @@ class TestGeminiMetadata:
         fields = GeminiProvider.required_configuration()
         assert "api_key" in fields
         assert "model" in fields
+
+
+# ---------------------------------------------------------------------------
+# Deterministic option translation
+# ---------------------------------------------------------------------------
+
+
+class TestGeminiDeterminism:
+    """Gemini supports the full sampling set, including a seed."""
+
+    def _config_kwargs(self, options):
+        with patch("src.providers.gemini.genai") as mock_genai, \
+             patch("src.providers.gemini.genai_types") as mock_types:
+            mock_client = MagicMock()
+            mock_genai.Client.return_value = mock_client
+            mock_types.GenerateContentConfig.return_value = MagicMock()
+            mock_client.models.generate_content.return_value = _fake_response("{}")
+
+            GeminiProvider(_config(), _credentials()).generate(
+                "prompt", options=options
+            )
+            return mock_types.GenerateContentConfig.call_args.kwargs
+
+    def test_sampling_keys_are_forwarded(self):
+        kwargs = self._config_kwargs(deterministic_options())
+
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["top_p"] == 1.0
+        assert kwargs["top_k"] == 1
+        assert kwargs["seed"] == DETERMINISTIC_OPTIONS["seed"]
+        assert kwargs["max_output_tokens"] == DETERMINISTIC_OPTIONS["max_tokens"]
+
+    def test_json_mode_sets_the_response_mime_type(self):
+        kwargs = self._config_kwargs(deterministic_options())
+
+        assert kwargs["response_mime_type"] == "application/json"
+
+    def test_unsupported_keys_are_ignored(self):
+        kwargs = self._config_kwargs(deterministic_options())
+
+        assert "num_ctx" not in kwargs
+        assert "json_mode" not in kwargs
+
+    def test_optional_keys_omitted_when_absent(self):
+        kwargs = self._config_kwargs({})
+
+        for key in ("top_p", "top_k", "seed", "response_mime_type"):
+            assert key not in kwargs

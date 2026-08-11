@@ -1,0 +1,109 @@
+Job Analysis
+============
+
+Role
+----
+  Full Stack AI Developer
+
+Summary
+-------
+  Design, build, and deploy AI-driven applications to enhance user experience and automate business processes for the Sales Planning domain.
+
+Required Skills
+---------------
+  • Python
+  • FastAPI
+  • AI & Generative AI
+  • Large Language Models (LLMs)
+  • Prompt Engineering
+  • Agentic AI Systems
+  • Retrieval-Augmented Generation (RAG)
+  • LangChain / LangGraph
+  • MCP (Model Context Protocol) Servers
+  • Vector Databases
+  • Embeddings & Semantic Search
+  • AI Chatbot Development
+  • OpenAI, Claude, and other Foundation Model APIs
+  • GitHub Copilot, Cursor AI, and AI-assisted development tools
+  • REST APIs
+
+Preferred Skills
+----------------
+  • User Experience (UX) Design
+  • Snowflake
+  • Angular / React JS
+  • Good presentation skills
+  • Adaptive to new technologies
+
+Technologies
+------------
+  • Python
+  • FastAPI
+  • Agentic AI Systems
+  • Retrieval-Augmented Generation (RAG)
+  • LangChain / LangGraph
+  • MCP Servers
+  • Vector Databases
+  • Embeddings & Semantic Search
+  • AI Chatbot Development
+  • OpenAI, Claude, and other Foundation Model APIs
+  • GitHub Copilot, Cursor AI, and AI-assisted development tools
+  • REST APIs
+  • PostgreSQL
+  • Oracle
+  • Redis
+  • Snowflake
+  • Docker
+  • Kubernetes
+  • CI/CD Pipelines
+  • Jenkins
+  • GitHub Actions
+  • Git & GitHub
+
+Domains
+-------
+  • Sales Planning
+  • AI
+  • Machine Learning
+
+Responsibilities
+----------------
+  • Develop and implement AI-driven applications using modern Generative AI and Agentic AI frameworks.
+  • Design and build intelligent assistants, chatbots, AI agents, and workflow automation solutions using Large Language Models (LLMs).
+  • Integrate AI services and APIs, including Claude, OpenAI, MCP Servers, LangChain, Vercel AI SDK, and other emerging AI platforms.
+  • Implement Retrieval-Augmented Generation (RAG) architectures using vector databases, embeddings, semantic search, and knowledge retrieval techniques.
+  • Build proof-of-concepts (POCs) and pilot solutions to evaluate emerging AI technologies and their business impact.
+  • Develop scalable full-stack applications using modern frontend and backend technologies.
+  • Collaborate with product managers, architects, and business stakeholders to translate requirements into technical solutions.
+  • Create technical design documents, architecture diagrams, implementation plans, and user-facing documentation.
+  • Troubleshoot, debug, and resolve issues across development, testing, and production environments.
+  • Contribute to continuous improvement of engineering practices, coding standards, DevOps processes, and AI development methodologies.
+  • Stay current with advancements in AI, machine learning, software engineering, and cloud technologies, bringing innovative ideas to the team.
+
+Qualifications
+--------------
+  • Bachelor’s degree in computer science, Engineering, Information Technology, or a related field with up to 3 years of relevant experience
+  • Master's degree with 2+ years of relevant experience.
+  • Hands-on experience in Full Stack Development using modern frontend and backend technologies.
+  • Strong experience in Python development and AI/Generative AI technologies.
+  • Experience with relational and NoSQL databases.
+
+Keywords
+--------
+  • Full Stack AI Developer
+  • AI-driven applications
+  • Sales Planning
+  • Enterprise Data & AI Enablement
+  • Anaplan
+  • Pigment
+  • Go-to-Market (GTM) planning
+  • performance management solutions
+  • sales territory planning
+  • account assignments
+  • quota management
+  • goal cascading
+  • sales hierarchy management
+  • territory design
+  • account allocation
+  • target setting
+  • streamlined sales coverage and compensation systems

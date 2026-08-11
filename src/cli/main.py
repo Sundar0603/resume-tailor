@@ -19,6 +19,7 @@ warnings.filterwarnings("ignore", message=".*urllib3.*OpenSSL.*")
 
 from src.cli.analyze import analyze
 from src.cli.doctor import doctor
+from src.cli.plan import plan
 
 app = typer.Typer(
     name="resume-tailor",
@@ -38,6 +39,7 @@ def _root(ctx: typer.Context) -> None:
 
 app.command("doctor")(doctor)
 app.command("analyze")(analyze)
+app.command("plan")(plan)
 
 
 def main() -> None:

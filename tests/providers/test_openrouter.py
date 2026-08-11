@@ -28,6 +28,7 @@ from src.providers.base import (
     ProviderResponseError,
     RateLimitError,
 )
+from src.analyzer.sampling import DETERMINISTIC_OPTIONS, deterministic_options
 from src.providers.openrouter import OpenRouterProvider, _OPENROUTER_BASE_URL
 
 
@@ -79,7 +80,7 @@ class TestOpenRouterGenerate:
             mock_client.chat.completions.create.return_value = _fake_response("ok")
 
             provider = OpenRouterProvider(_config(), _credentials())
-            provider.generate("user prompt", system_prompt="be concise")
+            provider.generate("user prompt", options={"system_prompt": "be concise"})
 
             messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
             assert messages[0] == {"role": "system", "content": "be concise"}
@@ -119,7 +120,7 @@ class TestOpenRouterGenerate:
             provider = OpenRouterProvider(_config(), _credentials())
             provider.generate(
                 "prompt",
-                extra_headers={"HTTP-Referer": "https://myapp.example.com"},
+                options={"extra_headers": {"HTTP-Referer": "https://myapp.example.com"}},
             )
 
             kwargs = mock_client.chat.completions.create.call_args.kwargs
@@ -212,3 +213,41 @@ class TestOpenRouterMetadata:
         fields = OpenRouterProvider.required_configuration()
         assert "api_key" in fields
         assert "model" in fields
+
+
+# ---------------------------------------------------------------------------
+# Deterministic option translation
+# ---------------------------------------------------------------------------
+
+
+class TestOpenRouterDeterminism:
+    """OpenRouter takes the OpenAI parameter set plus top_k in the body."""
+
+    def _create_call(self, options):
+        with patch("src.providers.openrouter.openai") as mock_openai:
+            mock_client = MagicMock()
+            mock_openai.OpenAI.return_value = mock_client
+            mock_client.chat.completions.create.return_value = _fake_response("{}")
+
+            OpenRouterProvider(_config(), _credentials()).generate(
+                "prompt", options=options
+            )
+            return mock_client.chat.completions.create.call_args.kwargs
+
+    def test_supported_sampling_keys_are_forwarded(self):
+        kwargs = self._create_call(deterministic_options())
+
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["top_p"] == 1.0
+        assert kwargs["seed"] == DETERMINISTIC_OPTIONS["seed"]
+        assert kwargs["max_tokens"] == DETERMINISTIC_OPTIONS["max_tokens"]
+        assert kwargs["response_format"] == {"type": "json_object"}
+
+    def test_top_k_is_sent_in_the_request_body(self):
+        kwargs = self._create_call(deterministic_options())
+
+        assert kwargs["extra_body"] == {"top_k": 1}
+        assert "top_k" not in kwargs
+
+    def test_extra_body_omitted_when_top_k_absent(self):
+        assert "extra_body" not in self._create_call({})

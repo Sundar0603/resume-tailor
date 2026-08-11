@@ -18,6 +18,7 @@ import pytest
 
 from src.config.models import ProviderType, ResumeTailorConfig
 from src.providers.base import ConnectionError, ProviderError, ProviderResponseError
+from src.analyzer.sampling import DETERMINISTIC_OPTIONS, deterministic_options
 from src.providers.ollama import OllamaProvider
 
 
@@ -59,7 +60,7 @@ class TestOllamaGenerate:
             mock_client.chat.return_value = _fake_response("response")
 
             provider = OllamaProvider(_config())
-            provider.generate("user prompt", system_prompt="be concise")
+            provider.generate("user prompt", options={"system_prompt": "be concise"})
 
             call_kwargs = mock_client.chat.call_args
             messages = call_kwargs.kwargs["messages"]
@@ -86,10 +87,10 @@ class TestOllamaGenerate:
             mock_client.chat.return_value = _fake_response("response")
 
             provider = OllamaProvider(_config())
-            provider.generate("prompt", temperature=0.7)
+            provider.generate("prompt", options={"temperature": 0.7})
 
-            options = mock_client.chat.call_args.kwargs["options"]
-            assert options["temperature"] == 0.7
+            ollama_options = mock_client.chat.call_args.kwargs["options"]
+            assert ollama_options["temperature"] == 0.7
 
     def test_max_tokens_mapped_to_num_predict(self):
         with patch("src.providers.ollama.ollama") as mock_ollama:
@@ -98,10 +99,10 @@ class TestOllamaGenerate:
             mock_client.chat.return_value = _fake_response("response")
 
             provider = OllamaProvider(_config())
-            provider.generate("prompt", max_tokens=512)
+            provider.generate("prompt", options={"max_tokens": 512})
 
-            options = mock_client.chat.call_args.kwargs["options"]
-            assert options["num_predict"] == 512
+            ollama_options = mock_client.chat.call_args.kwargs["options"]
+            assert ollama_options["num_predict"] == 512
 
     def test_default_host_used_when_not_configured(self):
         config = ResumeTailorConfig(provider=ProviderType.OLLAMA, model="llama3")
@@ -174,3 +175,57 @@ class TestOllamaMetadata:
         fields = OllamaProvider.required_configuration()
         assert "host" in fields
         assert "model" in fields
+
+
+# ---------------------------------------------------------------------------
+# Deterministic option translation
+# ---------------------------------------------------------------------------
+
+
+class TestOllamaDeterminism:
+    """Ollama supports every sampling key in the provider option contract."""
+
+    def _chat_call(self, options):
+        with patch("src.providers.ollama.ollama") as mock_ollama:
+            mock_client = MagicMock()
+            mock_ollama.Client.return_value = mock_client
+            mock_client.chat.return_value = _fake_response("{}")
+
+            OllamaProvider(_config()).generate("prompt", options=options)
+            return mock_client.chat.call_args.kwargs
+
+    def test_deterministic_options_are_translated(self):
+        kwargs = self._chat_call(deterministic_options())
+        sent = kwargs["options"]
+
+        assert sent["temperature"] == 0.0
+        assert sent["top_k"] == 1
+        assert sent["top_p"] == 1.0
+        assert sent["seed"] == DETERMINISTIC_OPTIONS["seed"]
+        assert sent["num_ctx"] == DETERMINISTIC_OPTIONS["num_ctx"]
+        assert sent["num_predict"] == DETERMINISTIC_OPTIONS["max_tokens"]
+
+    def test_json_mode_sets_the_format_flag(self):
+        assert self._chat_call(deterministic_options())["format"] == "json"
+
+    def test_reasoning_is_always_disabled(self):
+        """
+        Reasoning-capable models (qwen3, qwen3.6, deepseek) spend the entire
+        num_predict budget on hidden thinking tokens and return an empty
+        message.content unless think is False. That surfaces as an
+        empty-response error indistinguishable from a dead provider, so this
+        flag is a correctness requirement rather than a tuning choice.
+        """
+        assert self._chat_call(deterministic_options())["think"] is False
+
+    def test_reasoning_stays_disabled_without_options(self):
+        assert self._chat_call(None)["think"] is False
+
+    def test_format_omitted_when_json_mode_is_off(self):
+        assert "format" not in self._chat_call({"json_mode": False})
+
+    def test_absent_sampling_keys_are_not_invented(self):
+        sent = self._chat_call({})["options"]
+
+        for key in ("top_k", "top_p", "seed", "num_ctx", "num_predict"):
+            assert key not in sent

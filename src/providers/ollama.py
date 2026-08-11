@@ -5,7 +5,7 @@ Communicates with a locally running Ollama instance via the official SDK.
 No API key is required; authentication is handled by host configuration.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import ollama
 
@@ -40,14 +40,15 @@ class OllamaProvider(LLMProvider):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send *prompt* to the configured Ollama model and return the response.
+
+        Ollama supports every sampling key in the provider option contract,
+        including ``seed`` and ``num_ctx``. Both matter for reproducibility:
+        a zero temperature alone still leaves tie-breaking to the sampler,
+        and an unpinned context window changes behaviour as the prompt grows.
 
         Raises
         ------
@@ -58,23 +59,53 @@ class OllamaProvider(LLMProvider):
         ProviderError
             For any other Ollama SDK error.
         """
+        opts = options or {}
+        system_prompt = opts.get("system_prompt")
+        temperature = opts.get("temperature", 0.0)
+        top_p = opts.get("top_p")
+        top_k = opts.get("top_k")
+        seed = opts.get("seed")
+        num_ctx = opts.get("num_ctx")
+        max_tokens = opts.get("max_tokens")
+        stop_sequences = opts.get("stop_sequences")
+        json_mode = opts.get("json_mode", False)
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        options: dict = {"temperature": temperature}
+        ollama_options: dict = {"temperature": temperature}
+        if top_p is not None:
+            ollama_options["top_p"] = top_p
+        if top_k is not None:
+            ollama_options["top_k"] = top_k
+        if seed is not None:
+            ollama_options["seed"] = seed
+        if num_ctx is not None:
+            ollama_options["num_ctx"] = num_ctx
         if max_tokens is not None:
-            options["num_predict"] = max_tokens
+            ollama_options["num_predict"] = max_tokens
         if stop_sequences:
-            options["stop"] = stop_sequences
+            ollama_options["stop"] = stop_sequences
+
+        # think=False is required, not an optimisation. Reasoning-capable models
+        # (qwen3, qwen3.6, deepseek) otherwise spend the whole num_predict budget
+        # on hidden thinking tokens and return an empty message.content, which
+        # reaches the caller as an empty-response error indistinguishable from a
+        # dead provider. Every caller here wants structured JSON, never
+        # chain-of-thought, so reasoning is disabled for all of them.
+        chat_kwargs: dict = {
+            "model": self._model,
+            "messages": messages,
+            "options": ollama_options,
+            "think": False,
+        }
+        if json_mode:
+            chat_kwargs["format"] = "json"
 
         try:
-            response = self._client.chat(
-                model=self._model,
-                messages=messages,
-                options=options,
-            )
+            response = self._client.chat(**chat_kwargs)
         except ollama.ResponseError as exc:
             raise ProviderError(f"Ollama error: {exc}") from exc
         except Exception as exc:

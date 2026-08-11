@@ -5,7 +5,7 @@ Communicates with the Google Gemini API via the official google-genai SDK.
 The API key is loaded from the OS credential store via CredentialManager.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import google.genai as genai
 import google.genai.types as genai_types
@@ -57,14 +57,13 @@ class GeminiProvider(LLMProvider):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send *prompt* to the configured Gemini model and return the response.
+
+        Gemini supports the full sampling set including ``seed``. ``num_ctx``
+        is fixed by the model and is ignored.
 
         Raises
         ------
@@ -79,16 +78,36 @@ class GeminiProvider(LLMProvider):
         ProviderError
             For any other google-genai SDK error.
         """
+        opts = options or {}
+        system_prompt = opts.get("system_prompt")
+        temperature = opts.get("temperature", 0.0)
+        top_p = opts.get("top_p")
+        top_k = opts.get("top_k")
+        seed = opts.get("seed")
+        max_tokens = opts.get("max_tokens")
+        stop_sequences = opts.get("stop_sequences")
+        json_mode = opts.get("json_mode", False)
+
+        config_kwargs: dict = {
+            "temperature": temperature,
+            "max_output_tokens": max_tokens,
+            "stop_sequences": stop_sequences,
+            "system_instruction": system_prompt,
+        }
+        if top_p is not None:
+            config_kwargs["top_p"] = top_p
+        if top_k is not None:
+            config_kwargs["top_k"] = top_k
+        if seed is not None:
+            config_kwargs["seed"] = seed
+        if json_mode:
+            config_kwargs["response_mime_type"] = "application/json"
+
         try:
             response = self._client.models.generate_content(
                 model=self._model,
                 contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                    stop_sequences=stop_sequences,
-                    system_instruction=system_prompt,
-                ),
+                config=genai_types.GenerateContentConfig(**config_kwargs),
             )
         except Exception as exc:
             exc_type = type(exc).__name__

@@ -1,0 +1,67 @@
+Job Analysis
+============
+
+Role
+----
+  Application Software Developer
+
+Seniority
+---------
+  IC2
+
+Summary
+-------
+  The role involves developing and maintaining application software, troubleshooting issues, and collaborating with teams to ensure customer satisfaction.
+
+Required Skills
+---------------
+  • application development
+  • code review
+  • debugging
+  • troubleshooting
+  • API integration
+
+Preferred Skills
+----------------
+  • technical guidance for customers
+  • incident response coordination
+  • quality assurance processes
+
+Technologies
+------------
+  • OCI (Oracle Cloud Infrastructure)
+  • API versioning
+  • performance profiling
+  • secure coding practices
+
+Domains
+-------
+  • software development lifecycle
+  • application maintenance
+  • customer support
+  • security and compliance
+
+Responsibilities
+----------------
+  • Delivers small-to-medium features end-to-end within a single application
+  • Provides production support during business hours; participates in incident rotations with guidance
+  • Troubleshoots routine and some non-routine issues across app services and straightforward OCI/integration paths
+  • Coordinates with QA/engineering on test coverage and release readiness
+  • Applies architectural guidelines; raises design questions when needed
+  • Breaks down requirements into maintainable modules and tests
+  • Integrates and documents API dependencies for assigned features
+  • Contributes input to team-level build priorities based on reliability/scalability needs
+  • References forums/live-site reports to improve acceptance criteria
+  • Collaborates with Designers/PMs/engineers to clarify requirements
+
+Qualifications
+--------------
+  • IC2 career level
+
+Keywords
+--------
+  • application development
+  • software testing
+  • API integration
+  • customer support
+  • secure coding

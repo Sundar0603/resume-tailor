@@ -7,6 +7,7 @@ Public API::
 """
 
 from .analyzer import JDAnalyzer
+from .canonical import canonicalize
 from .exceptions import (
     AnalyzerError,
     InvalidAnalyzerJSON,
@@ -15,6 +16,7 @@ from .exceptions import (
 )
 from .models import JobAnalysis
 from .provider import LLMProvider
+from .sampling import DETERMINISTIC_OPTIONS, deterministic_options
 
 __all__ = [
     "JDAnalyzer",
@@ -24,4 +26,7 @@ __all__ = [
     "InvalidAnalyzerJSON",
     "InvalidAnalyzerResponse",
     "JobAnalysisValidationError",
+    "canonicalize",
+    "DETERMINISTIC_OPTIONS",
+    "deterministic_options",
 ]

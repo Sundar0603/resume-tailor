@@ -1,0 +1,25 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Output files
+output/
+resume_output.txt
+
+# OS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/

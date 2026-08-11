@@ -102,9 +102,6 @@ def _pretty_print(analysis: JobAnalysis) -> None:
         _print_section("Seniority")
         typer.echo(f"  {analysis.seniority}")
 
-    _print_section("Summary")
-    typer.echo(f"  {analysis.summary}")
-
     _print_section("Required Skills")
     _print_list(analysis.required_skills)
 

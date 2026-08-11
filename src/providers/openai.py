@@ -5,7 +5,7 @@ Communicates with the OpenAI API via the official SDK.
 The API key is loaded from the OS credential store via CredentialManager.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import openai
 
@@ -61,14 +61,14 @@ class OpenAIProvider(LLMProvider):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send *prompt* to the configured OpenAI model and return the response.
+
+        ``top_k`` and ``num_ctx`` have no OpenAI equivalent and are ignored,
+        per the provider option contract. ``seed`` is honoured on a
+        best-effort basis by the API.
 
         Raises
         ------
@@ -83,6 +83,16 @@ class OpenAIProvider(LLMProvider):
         ProviderError
             For any other OpenAI SDK error.
         """
+        opts = options or {}
+        system_prompt = opts.get("system_prompt")
+        temperature = opts.get("temperature", 0.0)
+        top_p = opts.get("top_p")
+        seed = opts.get("seed")
+        max_tokens = opts.get("max_tokens")
+        stop_sequences = opts.get("stop_sequences")
+        extra_headers = opts.get("extra_headers")
+        json_mode = opts.get("json_mode", False)
+
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -93,12 +103,18 @@ class OpenAIProvider(LLMProvider):
             "messages": messages,
             "temperature": temperature,
         }
+        if top_p is not None:
+            kwargs["top_p"] = top_p
+        if seed is not None:
+            kwargs["seed"] = seed
         if max_tokens is not None:
             kwargs["max_tokens"] = max_tokens
         if stop_sequences:
             kwargs["stop"] = stop_sequences
         if extra_headers:
             kwargs["extra_headers"] = extra_headers
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
 
         try:
             response = self._client.chat.completions.create(**kwargs)

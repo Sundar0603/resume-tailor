@@ -27,6 +27,7 @@ from src.providers.base import (
     ProviderResponseError,
     RateLimitError,
 )
+from src.analyzer.sampling import DETERMINISTIC_OPTIONS, deterministic_options
 from src.providers.openai import OpenAIProvider
 
 
@@ -74,7 +75,7 @@ class TestOpenAIGenerate:
             mock_client.chat.completions.create.return_value = _fake_response("ok")
 
             provider = OpenAIProvider(_config(), _credentials())
-            provider.generate("user prompt", system_prompt="be concise")
+            provider.generate("user prompt", options={"system_prompt": "be concise"})
 
             messages = mock_client.chat.completions.create.call_args.kwargs["messages"]
             assert messages[0] == {"role": "system", "content": "be concise"}
@@ -100,7 +101,7 @@ class TestOpenAIGenerate:
             mock_client.chat.completions.create.return_value = _fake_response("ok")
 
             provider = OpenAIProvider(_config(), _credentials())
-            provider.generate("prompt", temperature=0.5)
+            provider.generate("prompt", options={"temperature": 0.5})
 
             kwargs = mock_client.chat.completions.create.call_args.kwargs
             assert kwargs["temperature"] == 0.5
@@ -112,7 +113,7 @@ class TestOpenAIGenerate:
             mock_client.chat.completions.create.return_value = _fake_response("ok")
 
             provider = OpenAIProvider(_config(), _credentials())
-            provider.generate("prompt", max_tokens=256)
+            provider.generate("prompt", options={"max_tokens": 256})
 
             kwargs = mock_client.chat.completions.create.call_args.kwargs
             assert kwargs["max_tokens"] == 256
@@ -223,3 +224,44 @@ class TestOpenAIMetadata:
         fields = OpenAIProvider.required_configuration()
         assert "api_key" in fields
         assert "model" in fields
+
+
+# ---------------------------------------------------------------------------
+# Deterministic option translation
+# ---------------------------------------------------------------------------
+
+
+class TestOpenAIDeterminism:
+    """top_k and num_ctx have no OpenAI equivalent and must be dropped."""
+
+    def _create_call(self, options):
+        with patch("src.providers.openai.openai") as mock_openai:
+            mock_client = MagicMock()
+            mock_openai.OpenAI.return_value = mock_client
+            mock_client.chat.completions.create.return_value = _fake_response("{}")
+
+            OpenAIProvider(_config(), _credentials()).generate("prompt", options=options)
+            return mock_client.chat.completions.create.call_args.kwargs
+
+    def test_supported_sampling_keys_are_forwarded(self):
+        kwargs = self._create_call(deterministic_options())
+
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["top_p"] == 1.0
+        assert kwargs["seed"] == DETERMINISTIC_OPTIONS["seed"]
+        assert kwargs["max_tokens"] == DETERMINISTIC_OPTIONS["max_tokens"]
+
+    def test_unsupported_keys_are_ignored(self):
+        kwargs = self._create_call(deterministic_options())
+
+        assert "top_k" not in kwargs
+        assert "num_ctx" not in kwargs
+        assert "json_mode" not in kwargs
+
+    def test_json_mode_sets_response_format(self):
+        kwargs = self._create_call(deterministic_options())
+
+        assert kwargs["response_format"] == {"type": "json_object"}
+
+    def test_response_format_omitted_when_json_mode_is_off(self):
+        assert "response_format" not in self._create_call({"json_mode": False})

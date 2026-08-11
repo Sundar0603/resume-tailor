@@ -1,9 +1,19 @@
-Configuration
+# NOT YET WIRED — nothing in src/ reads this file.
+#
+# Active runtime config for provider/model/host is:
+#     ~/.resume-tailor/config.toml     (see tasks/007-ai-provider-conf.md)
+# Editing the llm block below has NO effect on which model runs.
+#
+# The settings here are design intent for features not yet built
+# (LaTeX render, revision engine, reports). Retained because
+# docs/ARCHITECTURE.md:187 lists this path as part of the mandated
+# folder structure, and max_revisions is specified at ARCHITECTURE.md:548.
+
 profile: balanced
 
 llm:
-provider: ollama
-model: qwen2.5:7b
+  provider: ollama
+  model: qwen3.6:latest
 
 mode: strict
 

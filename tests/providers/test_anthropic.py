@@ -27,6 +27,7 @@ from src.providers.base import (
     ProviderResponseError,
     RateLimitError,
 )
+from src.analyzer.sampling import DETERMINISTIC_OPTIONS, deterministic_options
 from src.providers.anthropic import AnthropicProvider
 
 
@@ -74,7 +75,7 @@ class TestAnthropicGenerate:
             mock_client.messages.create.return_value = _fake_response("ok")
 
             provider = AnthropicProvider(_config(), _credentials())
-            provider.generate("user prompt", system_prompt="be concise")
+            provider.generate("user prompt", options={"system_prompt": "be concise"})
 
             kwargs = mock_client.messages.create.call_args.kwargs
             assert kwargs["system"] == "be concise"
@@ -87,7 +88,7 @@ class TestAnthropicGenerate:
             mock_client.messages.create.return_value = _fake_response("ok")
 
             provider = AnthropicProvider(_config(), _credentials())
-            provider.generate("user prompt")
+            provider.generate("user prompt", options={})
 
             kwargs = mock_client.messages.create.call_args.kwargs
             assert "system" not in kwargs
@@ -112,7 +113,7 @@ class TestAnthropicGenerate:
             mock_client.messages.create.return_value = _fake_response("ok")
 
             provider = AnthropicProvider(_config(), _credentials())
-            provider.generate("prompt", max_tokens=1024)
+            provider.generate("prompt", options={"max_tokens": 1024})
 
             kwargs = mock_client.messages.create.call_args.kwargs
             assert kwargs["max_tokens"] == 1024
@@ -204,3 +205,42 @@ class TestAnthropicMetadata:
         fields = AnthropicProvider.required_configuration()
         assert "api_key" in fields
         assert "model" in fields
+
+
+# ---------------------------------------------------------------------------
+# Deterministic option translation
+# ---------------------------------------------------------------------------
+
+
+class TestAnthropicDeterminism:
+    """
+    Anthropic has no seed, and advises against pairing top_p with
+    temperature, so determinism rests on temperature 0 with top_k 1.
+    """
+
+    def _create_call(self, options):
+        with patch("src.providers.anthropic.anthropic") as mock_anthropic:
+            mock_client = MagicMock()
+            mock_anthropic.Anthropic.return_value = mock_client
+            mock_client.messages.create.return_value = _fake_response("{}")
+
+            AnthropicProvider(_config(), _credentials()).generate(
+                "prompt", options=options
+            )
+            return mock_client.messages.create.call_args.kwargs
+
+    def test_greedy_sampling_is_forwarded(self):
+        kwargs = self._create_call(deterministic_options())
+
+        assert kwargs["temperature"] == 0.0
+        assert kwargs["top_k"] == 1
+        assert kwargs["max_tokens"] == DETERMINISTIC_OPTIONS["max_tokens"]
+
+    def test_unsupported_keys_are_ignored(self):
+        kwargs = self._create_call(deterministic_options())
+
+        for key in ("seed", "top_p", "num_ctx", "json_mode", "response_format"):
+            assert key not in kwargs
+
+    def test_top_k_omitted_when_absent(self):
+        assert "top_k" not in self._create_call({})

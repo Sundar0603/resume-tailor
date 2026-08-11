@@ -14,7 +14,7 @@ Supported providers:
 """
 
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class LLMProvider(ABC):
@@ -29,11 +29,7 @@ class LLMProvider(ABC):
     def generate(
         self,
         prompt: str,
-        system_prompt: Optional[str] = None,
-        temperature: float = 0.0,
-        max_tokens: Optional[int] = None,
-        stop_sequences: Optional[List[str]] = None,
-        extra_headers: Optional[Dict[str, str]] = None,
+        options: Optional[Dict[str, Any]] = None,
     ) -> str:
         """
         Send a prompt to the LLM and return the raw text response.
@@ -42,21 +38,36 @@ class LLMProvider(ABC):
         ----------
         prompt : str
             The user prompt to send to the language model.
-        system_prompt : str | None
-            An optional system-level instruction prepended to the conversation.
-            Providers that do not support system prompts should incorporate it
-            into the user prompt or silently ignore it.
-        temperature : float
-            Sampling temperature. 0.0 produces deterministic output.
-            Defaults to 0.0.
-        max_tokens : int | None
-            Maximum number of tokens to generate. Provider default is used
-            when ``None``.
-        stop_sequences : list[str] | None
-            Optional list of strings that cause generation to stop early.
-        extra_headers : dict[str, str] | None
-            Optional additional HTTP headers forwarded to the provider API.
-            Useful for routing headers (e.g. OpenRouter ``HTTP-Referer``).
+        options : dict | None
+            Optional dictionary of generation parameters, expressed in a
+            provider-agnostic vocabulary. A provider translates the keys its
+            API supports and **silently ignores** the rest, so callers may
+            always send the full set. Supported keys:
+
+            - ``system_prompt`` (str): System-level instruction prepended to
+              the conversation. Providers that do not support system prompts
+              should incorporate it into the user prompt or silently ignore it.
+            - ``temperature`` (float): Sampling temperature. Defaults to 0.0.
+            - ``top_p`` (float): Nucleus sampling cutoff.
+            - ``top_k`` (int): Number of candidate tokens considered. ``1``
+              means greedy decoding.
+            - ``seed`` (int): Random seed. Providers without a seed parameter
+              ignore this.
+            - ``num_ctx`` (int): Context window size, in tokens. Meaningful
+              for local runtimes only; hosted APIs ignore it.
+            - ``json_mode`` (bool): Constrain the response to a valid JSON
+              object where the provider supports it.
+            - ``max_tokens`` (int): Maximum number of tokens to generate.
+              Provider default is used when absent.
+            - ``stop_sequences`` (list[str]): Strings that cause generation
+              to stop early.
+            - ``extra_headers`` (dict[str, str]): Additional HTTP headers
+              forwarded to the provider API. Useful for routing headers
+              (e.g. OpenRouter ``HTTP-Referer``).
+
+            Callers that need reproducible output should send
+            :data:`src.analyzer.sampling.DETERMINISTIC_OPTIONS` rather than
+            assembling the sampling keys themselves.
 
         Returns
         -------
