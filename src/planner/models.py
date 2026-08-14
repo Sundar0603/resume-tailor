@@ -179,15 +179,35 @@ class SkillCategoryPlan(BaseModel):
                 raise ValueError(
                     "skills_plans: GENERATE requires a non-empty new_category_name"
                 )
+            # A generated category is applied verbatim by the Resume Generator,
+            # which makes no LLM call for skills. Without this rule a category
+            # can be created with a name and no members: the validator only
+            # warns about an empty category (EMPTY_SKILL_CATEGORY), so it would
+            # reach the rendered resume.
+            if not self.skills_to_add:
+                raise ValueError(
+                    "skills_plans: GENERATE requires a non-empty skills_to_add"
+                )
         else:
             if not self.category_id or not self.category_id.strip():
                 raise ValueError(
                     f"skills_plans: {self.action.value} requires a non-empty category_id"
                 )
-            if self.new_category_name is not None:
+            # REWRITE may rename the category so its heading can match the
+            # language of the job description — "Backend" becoming "Backend &
+            # Distributed Systems". KEEP and REMOVE never rename.
+            if (
+                self.action != PlanAction.REWRITE
+                and self.new_category_name is not None
+            ):
                 raise ValueError(
                     f"skills_plans: {self.action.value} must not set new_category_name"
                 )
+            if self.action == PlanAction.REWRITE and self.new_category_name is not None:
+                if not self.new_category_name.strip():
+                    raise ValueError(
+                        "skills_plans: REWRITE new_category_name must not be blank"
+                    )
         return self
 
 

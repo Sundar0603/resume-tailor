@@ -109,7 +109,9 @@ Structured `JDAnalysis` containing:
 - Generate an optimized resume using:
   - Resume
   - JD Analysis
+  - Resume Plan
   - Selected Mode
+- Follow the `ResumePlan` rather than independently deciding what changes.
 - Apply Strict or Aggressive mode rules.
 - Produce an optimized `Resume` object.
 - Revise only requested sections during the revision loop.
@@ -118,11 +120,26 @@ Structured `JDAnalysis` containing:
 
 - Resume
 - JDAnalysis
+- ResumePlan
 - Generation Mode
 
 ## Output
 
 - Optimized `Resume` object.
+
+> **Amended in task 012.** This specification originally placed the Generator
+> directly after the JD Analyzer. A **Resume Planner** stage (task 011) now sits
+> between them: the Planner decides *what* changes and *why*, emitting a
+> `ResumePlan` of KEEP / REWRITE / REMOVE / GENERATE actions per entity, and the
+> Generator writes the words. The Generator no longer chooses which sections to
+> change.
+>
+> Two further amendments from task 012:
+>
+> - Experience `role` is mutable in **aggressive mode only**, so a role can be
+>   retitled to match the target job. See `tasks/005-resume-validator.md`.
+> - The skills section is applied in pure Python. The Planner already emits
+>   literal category names and skill strings, so no LLM call is involved.
 
 ### Strict Mode
 

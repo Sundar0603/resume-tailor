@@ -266,7 +266,7 @@ class ResumePlanner:
             )
 
         for sp in plan.skills_plans:
-            self._reconcile_skill_lists(sp, resume)
+            self._reconcile_skill_lists(sp, resume, mode)
 
         if mode == PlanningMode.STRICT:
             self._check_no_generate(plan)
@@ -278,12 +278,21 @@ class ResumePlanner:
                 raise DuplicatePlanEntry(f"Duplicate {label}: {entity_id!r}")
             seen.add(entity_id)
 
-    def _reconcile_skill_lists(self, sp, resume: Resume) -> None:
+    def _reconcile_skill_lists(
+        self, sp, resume: Resume, mode: PlanningMode = PlanningMode.AGGRESSIVE
+    ) -> None:
         """
         Drop skills_to_remove entries that name a skill absent from the
         category (rule 21 — a soft failure, noted via ``last_discarded``),
         and reject a skill listed in both skills_to_add and skills_to_remove
         of the same category (rule 22 — a hard failure).
+
+        In strict mode, also drop skills_to_add entries naming something the
+        candidate does not already demonstrate anywhere in the resume (rule 26).
+        Strict mode forbids GENERATE, but nothing stopped a REWRITE from
+        smuggling a brand-new skill in through skills_to_add — and the Resume
+        Generator applies skill plans verbatim, so it would reach the resume as
+        a claim the candidate never made.
         """
         add_keys = {canonical_text(s).casefold() for s in sp.skills_to_add}
         remove_keys = {canonical_text(s).casefold() for s in sp.skills_to_remove}
@@ -294,6 +303,27 @@ class ResumePlanner:
                 f"skill(s) listed in both skills_to_add and skills_to_remove: "
                 f"{sorted(overlap)}"
             )
+
+        # A GENERATE entry is illegal in strict mode outright, and
+        # _check_strict_mode reports that far more clearly than an emptied
+        # skills_to_add would. Leave it alone and let that check fire.
+        if (
+            mode == PlanningMode.STRICT
+            and sp.action != PlanAction.GENERATE
+            and sp.skills_to_add
+        ):
+            supported = _supported_skill_vocabulary(resume)
+            allowed = []
+            for skill in sp.skills_to_add:
+                if canonical_text(skill).casefold() in supported:
+                    allowed.append(skill)
+                else:
+                    self.last_discarded.append(
+                        f"{sp.category_id or 'new category'}: skill {skill!r} is not "
+                        "supported by the resume (skills_to_add entry dropped in "
+                        "STRICT mode)"
+                    )
+            sp.skills_to_add = allowed
 
         if sp.category_id is None:
             return
@@ -328,3 +358,28 @@ class ResumePlanner:
                 raise PlanningModeViolation(
                     "STRICT mode forbids GENERATE, but project_plans contains one."
                 )
+
+
+def _supported_skill_vocabulary(resume: Resume) -> set:
+    """
+    Return every skill the resume already demonstrates, case-folded.
+
+    Drawn from the skills section plus the technologies and domains named on
+    experiences and projects. The wider net is deliberate: strict mode allows
+    *reorganizing* existing information, so promoting a technology that only
+    appears on a project into the skills section is legitimate. Inventing one
+    that appears nowhere is not.
+    """
+    vocabulary = set()
+
+    for category in resume.skills:
+        vocabulary.update(canonical_text(s).casefold() for s in category.skills)
+    for experience in resume.experiences:
+        vocabulary.update(canonical_text(t).casefold() for t in experience.technologies)
+        vocabulary.update(canonical_text(d).casefold() for d in experience.domains)
+    for project in resume.projects:
+        vocabulary.update(canonical_text(t).casefold() for t in project.technologies)
+        vocabulary.update(canonical_text(d).casefold() for d in project.domains)
+
+    vocabulary.discard("")
+    return vocabulary

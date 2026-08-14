@@ -239,7 +239,9 @@ def plan(
         typer.echo(f"✗ Failed to parse resume: {exc}")
         raise typer.Exit(code=1)
     except FileNotFoundError as exc:
-        typer.echo(f"✗ Resume file not found: {exc}")
+        # ResumeParser already raises a complete sentence ("Resume file not
+        # found: <path>"), so prefixing it again would double the phrase.
+        typer.echo(f"✗ {exc}")
         raise typer.Exit(code=1)
 
     # --- Read the job description ---

@@ -100,6 +100,11 @@ and REMOVE must leave it null.
 - GENERATE requires the id field to be null and requires generation_brief \
 (projects) or new_category_name (skill categories) to be non-empty; every other \
 action requires a non-null id and requires that field to be null.
+- A GENERATE skill category must also list at least one skill in skills_to_add. \
+A new category with no skills is never valid.
+- A REWRITE skill category may optionally set new_category_name to rename the \
+category so its heading matches the language of the job. KEEP and REMOVE must \
+leave new_category_name null.
 - Never list the same skill in both skills_to_add and skills_to_remove of the same \
 skill category.
 
@@ -117,7 +122,7 @@ Required JSON schema:
             "action": "<KEEP, REWRITE, REMOVE, or GENERATE>",
             "priority": "<CRITICAL, HIGH, MEDIUM, or LOW>",
             "reasoning": "<why>",
-            "new_category_name": "<non-null only if action is GENERATE>",
+            "new_category_name": "<required if action is GENERATE, optional rename if REWRITE, else null>",
             "skills_to_add": ["<skill>", ...],
             "skills_to_remove": ["<skill>", ...]
         }}
@@ -128,7 +133,7 @@ Required JSON schema:
             "action": "<KEEP or REWRITE>",
             "priority": "<CRITICAL, HIGH, MEDIUM, or LOW>",
             "reasoning": "<why>",
-            "rewrite_strategy": "<non-null only if action is REWRITE>",
+            "rewrite_strategy": "<REQUIRED when action is REWRITE: how to change it. null otherwise>",
             "keywords_to_include": ["<keyword>", ...],
             "themes_to_emphasize": ["<theme>", ...]
         }}
@@ -139,7 +144,7 @@ Required JSON schema:
             "action": "<KEEP, REWRITE, REMOVE, or GENERATE>",
             "priority": "<CRITICAL, HIGH, MEDIUM, or LOW>",
             "reasoning": "<why>",
-            "rewrite_strategy": "<non-null only if action is REWRITE>",
+            "rewrite_strategy": "<REQUIRED when action is REWRITE: how to change it. null otherwise>",
             "generation_brief": "<non-null only if action is GENERATE>",
             "keywords_to_include": ["<keyword>", ...],
             "themes_to_emphasize": ["<theme>", ...]

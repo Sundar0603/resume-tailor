@@ -37,6 +37,34 @@ _MAX_PROJECT_HIGHLIGHTS = 6
 
 _VALID_SOURCES = set(EntitySource)
 
+#: Tailoring mode names understood by :meth:`ResumeValidator.validate`.
+#: These match ``src.planner.models.PlanningMode``, but the validation layer
+#: deliberately does not import from the planner — it compares plain strings so
+#: that it stays free of any domain dependency. ``PlanningMode`` is a ``str``
+#: Enum, so passing one of its members works unchanged.
+_AGGRESSIVE_MODE = "AGGRESSIVE"
+_STRICT_MODE = "STRICT"
+
+#: Experience fields that are immutable regardless of mode.
+_IMMUTABLE_EXPERIENCE_FIELDS = ("company", "employment_type", "duration", "location")
+
+#: Immutable in strict mode only. In aggressive mode the generator may retitle a
+#: role to match the target job — "Software Engineer" becoming "Backend
+#: Engineer" — while the employer, dates and employment type stay fixed.
+_ROLE_FIELD = "role"
+
+
+def _is_aggressive(mode: str) -> bool:
+    """
+    Return True when the given mode name selects aggressive tailoring.
+
+    Accepts a plain string or any ``str`` Enum member. ``str()`` on a
+    ``str`` Enum yields ``"PlanningMode.AGGRESSIVE"`` on Python 3.9, so the
+    member's ``value`` is preferred when present.
+    """
+    value = getattr(mode, "value", mode)
+    return str(value).strip().upper() == _AGGRESSIVE_MODE
+
 
 class ResumeValidator:
     """
@@ -60,6 +88,7 @@ class ResumeValidator:
         *,
         source_resume: Resume,
         generated_resume: Resume,
+        mode: str = _STRICT_MODE,
     ) -> ValidationResult:
         """
         Validate the generated resume against the source resume.
@@ -70,6 +99,13 @@ class ResumeValidator:
             The canonical resume that was used to start generation.
         generated_resume:
             The resume produced by the Resume Generator.
+        mode:
+            The tailoring mode the resume was generated under, compared
+            case-insensitively. Defaults to strict, which is the safest
+            reading for any caller that does not know the mode. The only
+            rule this relaxes is experience ``role``: aggressive tailoring
+            may retitle a role to match the target job, strict may not.
+            A ``PlanningMode`` member may be passed directly.
 
         Returns
         -------
@@ -84,7 +120,9 @@ class ResumeValidator:
         errors.extend(self._validate_contact(source_resume, generated_resume))
         errors.extend(self._validate_summary(generated_resume))
         errors.extend(self._validate_skills(generated_resume))
-        errors.extend(self._validate_experience(source_resume, generated_resume))
+        errors.extend(
+            self._validate_experience(source_resume, generated_resume, mode)
+        )
         errors.extend(self._validate_projects(generated_resume))
         errors.extend(self._validate_education(source_resume, generated_resume))
         errors.extend(self._validate_runtime_ids(generated_resume))
@@ -262,7 +300,7 @@ class ResumeValidator:
     # ------------------------------------------------------------------
 
     def _validate_experience(
-        self, source: Resume, generated: Resume
+        self, source: Resume, generated: Resume, mode: str = _STRICT_MODE
     ) -> List[ValidationIssue]:
         """Exactly two experiences; immutable fields must match source."""
         issues: List[ValidationIssue] = []
@@ -297,7 +335,7 @@ class ResumeValidator:
             if idx < len(source.experiences):
                 src_exp = source.experiences[idx]
                 issues.extend(
-                    self._compare_immutable_experience_fields(src_exp, exp)
+                    self._compare_immutable_experience_fields(src_exp, exp, mode)
                 )
 
         return issues
@@ -377,11 +415,23 @@ class ResumeValidator:
         self,
         source: Experience,
         generated: Experience,
+        mode: str = _STRICT_MODE,
     ) -> List[ValidationIssue]:
-        """company, role, and duration are immutable."""
+        """
+        Compare the experience fields the generator may not change.
+
+        ``company``, ``employment_type``, ``duration`` and ``location`` are
+        immutable in every mode. ``role`` is immutable in strict mode only:
+        aggressive tailoring is allowed to retitle a role to match the target
+        job, which is the whole point of the mode.
+        """
         issues: List[ValidationIssue] = []
 
-        for field in ("company", "role", "duration"):
+        fields = _IMMUTABLE_EXPERIENCE_FIELDS
+        if not _is_aggressive(mode):
+            fields = fields + (_ROLE_FIELD,)
+
+        for field in fields:
             src_val = getattr(source, field, None)
             gen_val = getattr(generated, field, None)
             if src_val != gen_val:

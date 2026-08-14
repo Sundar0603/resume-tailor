@@ -9,14 +9,19 @@ id/brief pairing, and the soft-drop behavior for a bad skill removal.
 import json
 
 import pytest
+from pydantic import ValidationError
 
 from src.planner import (
     DuplicatePlanEntry,
     ImmutableSectionViolation,
     MissingPlanEntry,
+    PlanAction,
     PlanConsistencyError,
+    PlanningModeViolation,
     ResumePlanValidationError,
     ResumePlanner,
+    SectionPriority,
+    SkillCategoryPlan,
     UnknownEntityReference,
 )
 
@@ -216,6 +221,195 @@ class TestGeneratePairing:
         planner = _planner(_json(payload))
         with pytest.raises(ResumePlanValidationError):
             planner.plan(make_resume(), make_job_analysis())
+
+
+class TestSkillCategoryNaming:
+    """
+    Rules added in task 012, when the Resume Generator became the consumer.
+
+    The generator applies skill categories in pure Python — no LLM call — so
+    whatever the planner emits here reaches the rendered resume verbatim.
+    """
+
+    def _generated_category(self, **overrides):
+        entry = {
+            "category_id": None,
+            "action": "GENERATE",
+            "priority": "HIGH",
+            "reasoning": "The job needs container tooling.",
+            "new_category_name": "Container & Orchestration",
+            "skills_to_add": ["Docker", "Kubernetes"],
+            "skills_to_remove": [],
+        }
+        entry.update(overrides)
+        return entry
+
+    def test_generate_without_skills_rejected(self):
+        # The validator only warns about an empty category, so an unenforced
+        # empty skills_to_add would ship a heading with nothing under it.
+        payload = make_payload()
+        payload["skills_plans"].append(self._generated_category(skills_to_add=[]))
+        planner = _planner(_json(payload))
+        with pytest.raises(ResumePlanValidationError):
+            planner.plan(make_resume(), make_job_analysis())
+
+    def test_generate_with_skills_accepted(self):
+        payload = make_payload()
+        payload["skills_plans"].append(self._generated_category())
+        planner = _planner(_json(payload))
+
+        plan = planner.plan(make_resume(), make_job_analysis())
+
+        generated = [sp for sp in plan.skills_plans if sp.category_id is None]
+        assert len(generated) == 1
+        assert generated[0].new_category_name == "Container & Orchestration"
+        assert generated[0].skills_to_add == ["Docker", "Kubernetes"]
+
+    def test_rewrite_may_rename_category(self):
+        payload = make_payload()
+        payload["skills_plans"][0]["action"] = "REWRITE"
+        payload["skills_plans"][0]["new_category_name"] = "Backend & Distributed Systems"
+        planner = _planner(_json(payload))
+
+        plan = planner.plan(make_resume(), make_job_analysis())
+
+        renamed = next(
+            sp for sp in plan.skills_plans if sp.category_id == "skill_001"
+        )
+        assert renamed.new_category_name == "Backend & Distributed Systems"
+
+    def test_rewrite_rename_is_optional(self):
+        payload = make_payload()
+        payload["skills_plans"][0]["action"] = "REWRITE"
+        payload["skills_plans"][0]["new_category_name"] = None
+        planner = _planner(_json(payload))
+
+        plan = planner.plan(make_resume(), make_job_analysis())
+
+        kept = next(sp for sp in plan.skills_plans if sp.category_id == "skill_001")
+        assert kept.new_category_name is None
+
+    def test_rewrite_blank_rename_becomes_no_rename(self):
+        # canonicalize() already folds "", "   " and "null" to None for the
+        # nullable scalar fields, so a blank rename means "keep the name"
+        # rather than failing the whole plan.
+        payload = make_payload()
+        payload["skills_plans"][0]["action"] = "REWRITE"
+        payload["skills_plans"][0]["new_category_name"] = "   "
+        planner = _planner(_json(payload))
+
+        plan = planner.plan(make_resume(), make_job_analysis())
+
+        kept = next(sp for sp in plan.skills_plans if sp.category_id == "skill_001")
+        assert kept.new_category_name is None
+
+    def test_blank_rename_rejected_at_model_level(self):
+        # Constructed directly, bypassing canonicalize().
+        with pytest.raises(ValidationError):
+            SkillCategoryPlan(
+                category_id="skill_001",
+                action=PlanAction.REWRITE,
+                priority=SectionPriority.HIGH,
+                new_category_name="   ",
+                reasoning="why",
+            )
+
+    def test_keep_may_not_rename(self):
+        payload = make_payload()
+        payload["skills_plans"][0]["action"] = "KEEP"
+        payload["skills_plans"][0]["new_category_name"] = "Something Else"
+        planner = _planner(_json(payload))
+        with pytest.raises(ResumePlanValidationError):
+            planner.plan(make_resume(), make_job_analysis())
+
+    def test_remove_may_not_rename(self):
+        payload = make_payload()
+        payload["skills_plans"][0]["action"] = "REMOVE"
+        payload["skills_plans"][0]["new_category_name"] = "Something Else"
+        planner = _planner(_json(payload))
+        with pytest.raises(ResumePlanValidationError):
+            planner.plan(make_resume(), make_job_analysis())
+
+
+class TestStrictSkillAdditions:
+    """
+    Rule 26, added in task 012 after a live run caught it.
+
+    Strict mode forbids GENERATE, but nothing stopped a REWRITE from smuggling
+    a brand-new skill in through ``skills_to_add`` — and the Resume Generator
+    applies skill plans verbatim in pure Python, so it reached the resume as a
+    claim the candidate never made. Dropped and reported, matching how rule 21
+    handles an impossible removal.
+    """
+
+    def _plan_adding(self, *skills):
+        payload = make_payload()
+        payload["skills_plans"][0]["action"] = "REWRITE"
+        payload["skills_plans"][0]["skills_to_add"] = list(skills)
+        return payload
+
+    def test_strict_drops_an_unsupported_skill(self):
+        planner = _planner(_json(self._plan_adding("Kubernetes")))
+        plan = planner.plan(make_resume(), make_job_analysis(), mode="strict")
+
+        rewritten = next(
+            sp for sp in plan.skills_plans if sp.category_id == "skill_001"
+        )
+        assert rewritten.skills_to_add == []
+
+    def test_strict_reports_the_dropped_skill(self):
+        planner = _planner(_json(self._plan_adding("Kubernetes")))
+        planner.plan(make_resume(), make_job_analysis(), mode="strict")
+        assert any("Kubernetes" in note for note in planner.last_discarded)
+
+    def test_strict_keeps_a_skill_shown_elsewhere_in_the_resume(self):
+        # Promoting a technology that only appears on an experience into the
+        # skills section is reorganizing, which strict mode allows.
+        planner = _planner(_json(self._plan_adding("Python")))
+        plan = planner.plan(make_resume(), make_job_analysis(), mode="strict")
+
+        rewritten = next(
+            sp for sp in plan.skills_plans if sp.category_id == "skill_001"
+        )
+        assert rewritten.skills_to_add == ["Python"]
+
+    def test_strict_filters_only_the_unsupported_entries(self):
+        planner = _planner(_json(self._plan_adding("Python", "Kubernetes")))
+        plan = planner.plan(make_resume(), make_job_analysis(), mode="strict")
+
+        rewritten = next(
+            sp for sp in plan.skills_plans if sp.category_id == "skill_001"
+        )
+        assert rewritten.skills_to_add == ["Python"]
+
+    def test_aggressive_keeps_an_unsupported_skill(self):
+        planner = _planner(_json(self._plan_adding("Kubernetes")))
+        plan = planner.plan(make_resume(), make_job_analysis(), mode="aggressive")
+
+        rewritten = next(
+            sp for sp in plan.skills_plans if sp.category_id == "skill_001"
+        )
+        assert rewritten.skills_to_add == ["Kubernetes"]
+        assert planner.last_discarded == []
+
+    def test_strict_generate_still_reports_the_mode_violation(self):
+        # The filter must not empty a GENERATE entry's skills and trip the
+        # non-empty rule instead of the clearer mode violation.
+        payload = make_payload()
+        payload["skills_plans"].append(
+            {
+                "category_id": None,
+                "action": "GENERATE",
+                "priority": "HIGH",
+                "new_category_name": "Orchestration",
+                "skills_to_add": ["Kubernetes"],
+                "skills_to_remove": [],
+                "reasoning": "The job needs orchestration.",
+            }
+        )
+        planner = _planner(_json(payload))
+        with pytest.raises(PlanningModeViolation):
+            planner.plan(make_resume(), make_job_analysis(), mode="strict")
 
 
 class TestRewriteStrategy:

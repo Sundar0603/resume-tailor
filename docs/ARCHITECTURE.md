@@ -141,6 +141,7 @@ This guarantees your formatting is always preserved.
    Module Responsibility
    Parser Read data
    Analyzer Understand JD
+   Planner Decide what changes and why
    Generator Generate / revise content
    Renderer Produce LaTeX
    Compiler Produce PDF
@@ -220,6 +221,8 @@ src/
     parser/
 
     analyzer/
+
+    planner/
 
     generator/
 
@@ -309,6 +312,9 @@ Resume Object
 JD Analyzer
 │
 ▼
+Resume Planner
+│
+▼
 Resume Generator
 │
 ▼
@@ -374,6 +380,7 @@ Input
 
 Resume
 JD Analysis
+Resume Plan
 Mode
 
 Output
@@ -381,6 +388,13 @@ Output
 Optimized Resume
 
 It knows nothing about LaTeX.
+
+Amended in task 012: a Resume Planner stage (task 011) sits between the JD
+Analyzer and the Generator. The Planner decides what changes and why, emitting
+a ResumePlan of KEEP / REWRITE / REMOVE / GENERATE actions per entity; the
+Generator follows that plan and writes the words. Experience role is mutable in
+aggressive mode only. See tasks/012-resume-generator.md and
+docs/PROJECT_KNOWLEDGE.md.
 
 Modes
 🟢 Strict

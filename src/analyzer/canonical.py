@@ -165,9 +165,18 @@ def _canonical_list(value: Any, sort: bool) -> Any:
     """
     Clean, deduplicate and optionally sort a list field.
 
-    Non-list values and non-string items are passed through untouched so
+    ``None`` becomes ``[]``. For a list field there is only one thing null can
+    mean — "nothing here" — and several models (gemma4 among them) spell an
+    empty list that way rather than as ``[]``. Absorbing it here is the same
+    kind of harmless-variation flattening the null-equivalent strings get, and
+    without it a model is rejected for a difference that carries no meaning.
+
+    Other non-list values and non-string items are passed through untouched so
     that schema validation still reports them.
     """
+    if value is None:
+        return []
+
     if not isinstance(value, list):
         return value
 

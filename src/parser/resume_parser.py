@@ -17,6 +17,13 @@ from .experience_parser import ExperienceParser
 from .project_parser import ProjectParser
 from .education_parser import EducationParser
 from ..helpers._section_utils import split_top_level_sections
+from ..entity_ids import (
+    EDUCATION_PREFIX,
+    EXPERIENCE_PREFIX,
+    PROJECT_PREFIX,
+    SKILL_PREFIX,
+    assign_sequential_ids,
+)
 
 
 class ResumeParser:
@@ -86,14 +93,10 @@ class ResumeParser:
         education_body = self._require_section(sections, "education", "Education")
         education = self._education_parser.parse(education_body)
 
-        for i, skill in enumerate(skills, start=1):
-            skill.id = f"skill_{i:03d}"
-        for i, exp in enumerate(experiences, start=1):
-            exp.id = f"exp_{i:03d}"
-        for i, proj in enumerate(projects, start=1):
-            proj.id = f"proj_{i:03d}"
-        for i, edu in enumerate(education, start=1):
-            edu.id = f"edu_{i:03d}"
+        assign_sequential_ids(skills, SKILL_PREFIX)
+        assign_sequential_ids(experiences, EXPERIENCE_PREFIX)
+        assign_sequential_ids(projects, PROJECT_PREFIX)
+        assign_sequential_ids(education, EDUCATION_PREFIX)
 
         return Resume(
             metadata=metadata,

@@ -297,6 +297,139 @@ class TestExperienceValidation:
 
 
 # ---------------------------------------------------------------------------
+# Mode-dependent experience immutability
+# ---------------------------------------------------------------------------
+
+
+def _retitled(source: Resume, role: str) -> Experience:
+    """Return experience 1 with a new role and every other field from source."""
+    src = source.experiences[0]
+    return _experience(
+        1,
+        company=src.company,
+        role=role,
+        employment_type=src.employment_type,
+        duration=src.duration,
+    )
+
+
+class TestRoleMutability:
+    """
+    ``role`` is immutable in strict mode and mutable in aggressive mode.
+
+    Aggressive tailoring exists so a role can be retitled to match the target
+    job — "Software Engineer" becoming "Backend Engineer". Nothing else about
+    the experience may move.
+    """
+
+    def test_default_mode_is_strict(self, validator, source, generated):
+        generated.experiences[0] = _retitled(source, "Backend Engineer")
+        result = validator.validate(source_resume=source, generated_resume=generated)
+        assert result.is_valid is False
+        assert ValidationCode.MODIFIED_IMMUTABLE_FIELD in _error_codes(result)
+
+    def test_strict_rejects_retitled_role(self, validator, source, generated):
+        generated.experiences[0] = _retitled(source, "Backend Engineer")
+        result = validator.validate(
+            source_resume=source, generated_resume=generated, mode="STRICT"
+        )
+        assert result.is_valid is False
+        assert ValidationCode.MODIFIED_IMMUTABLE_FIELD in _error_codes(result)
+
+    def test_aggressive_accepts_retitled_role(self, validator, source, generated):
+        generated.experiences[0] = _retitled(source, "Backend Engineer")
+        result = validator.validate(
+            source_resume=source, generated_resume=generated, mode="AGGRESSIVE"
+        )
+        assert result.is_valid is True
+
+    def test_mode_is_case_insensitive(self, validator, source, generated):
+        generated.experiences[0] = _retitled(source, "Backend Engineer")
+        result = validator.validate(
+            source_resume=source, generated_resume=generated, mode="  aggressive  "
+        )
+        assert result.is_valid is True
+
+    def test_planning_mode_member_is_accepted(self, validator, source, generated):
+        from src.planner.models import PlanningMode
+
+        generated.experiences[0] = _retitled(source, "Backend Engineer")
+        result = validator.validate(
+            source_resume=source,
+            generated_resume=generated,
+            mode=PlanningMode.AGGRESSIVE,
+        )
+        assert result.is_valid is True
+
+    def test_unknown_mode_falls_back_to_strict(self, validator, source, generated):
+        generated.experiences[0] = _retitled(source, "Backend Engineer")
+        result = validator.validate(
+            source_resume=source, generated_resume=generated, mode="NONSENSE"
+        )
+        assert result.is_valid is False
+        assert ValidationCode.MODIFIED_IMMUTABLE_FIELD in _error_codes(result)
+
+    def test_company_still_immutable_in_aggressive(self, validator, source, generated):
+        generated.experiences[0] = _experience(
+            1,
+            company="MODIFIED COMPANY",
+            role=source.experiences[0].role,
+            duration=source.experiences[0].duration,
+        )
+        result = validator.validate(
+            source_resume=source, generated_resume=generated, mode="AGGRESSIVE"
+        )
+        assert result.is_valid is False
+        assert ValidationCode.MODIFIED_IMMUTABLE_FIELD in _error_codes(result)
+
+    def test_duration_still_immutable_in_aggressive(self, validator, source, generated):
+        generated.experiences[0] = _experience(
+            1,
+            company=source.experiences[0].company,
+            role=source.experiences[0].role,
+            duration="MODIFIED DURATION",
+        )
+        result = validator.validate(
+            source_resume=source, generated_resume=generated, mode="AGGRESSIVE"
+        )
+        assert result.is_valid is False
+        assert ValidationCode.MODIFIED_IMMUTABLE_FIELD in _error_codes(result)
+
+    def test_employment_type_is_immutable_in_both_modes(
+        self, validator, source, generated
+    ):
+        for mode in ("STRICT", "AGGRESSIVE"):
+            generated.experiences[0] = _experience(
+                1,
+                company=source.experiences[0].company,
+                role=source.experiences[0].role,
+                duration=source.experiences[0].duration,
+                employment_type="Contract",
+            )
+            result = validator.validate(
+                source_resume=source, generated_resume=generated, mode=mode
+            )
+            assert result.is_valid is False
+            assert ValidationCode.MODIFIED_IMMUTABLE_FIELD in _error_codes(result)
+
+    def test_location_is_immutable_in_both_modes(self, validator, source, generated):
+        source.experiences[0].location = "Chennai"
+        for mode in ("STRICT", "AGGRESSIVE"):
+            generated.experiences[0] = _experience(
+                1,
+                company=source.experiences[0].company,
+                role=source.experiences[0].role,
+                duration=source.experiences[0].duration,
+                location="Bengaluru",
+            )
+            result = validator.validate(
+                source_resume=source, generated_resume=generated, mode=mode
+            )
+            assert result.is_valid is False
+            assert ValidationCode.MODIFIED_IMMUTABLE_FIELD in _error_codes(result)
+
+
+# ---------------------------------------------------------------------------
 # Project validation
 # ---------------------------------------------------------------------------
 

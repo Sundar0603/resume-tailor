@@ -222,8 +222,18 @@ Validation rules:
 The following fields are immutable and must exactly match the corresponding work experience in the source resume:
 
 - company
-- title
+- employment_type
 - duration
+- location
+
+> **Amended in task 012.** `role` (the field task 005 called "title") was
+> originally immutable too. It is now immutable in **strict mode only**.
+> `validate()` takes a keyword-only `mode` argument that defaults to `"STRICT"`,
+> so any caller that does not pass one keeps the original behaviour. In
+> aggressive mode the Resume Generator may retitle a role to match the target
+> job — "Software Engineer" becoming "Backend Engineer" — while the employer,
+> dates, employment type and location stay fixed. `employment_type` and
+> `location` were unchecked before task 012 and are now pinned in both modes.
 
 The Resume Generator must never:
 

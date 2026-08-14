@@ -322,6 +322,26 @@ class TestCanonicalization:
 
         assert payload["required_skills"] == ["b", "a"]
 
+    def test_null_list_fields_become_empty_lists(self):
+        """
+        For a list field, null can only mean "nothing here". Several models
+        (gemma4 among them) spell an empty list that way, and rejecting them
+        for it would be rejecting a difference that carries no meaning.
+        """
+        for field in SET_LIKE_FIELDS + PROSE_FIELDS:
+            assert canonicalize({field: None})[field] == [], field
+
+    def test_null_lists_do_not_change_the_analysis(self):
+        payload = _canonical_payload()
+        payload["preferred_skills"] = None
+        payload["nice_to_have"] = None
+
+        analyzer = JDAnalyzer(provider=ScriptedProvider([json.dumps(payload)]))
+        result = analyzer.analyze(JOB_DESCRIPTION)
+
+        assert result.preferred_skills == []
+        assert result.nice_to_have == []
+
     def test_set_like_fields_are_sorted(self):
         # One field at a time: required_skills and preferred_skills interact,
         # and that interaction is covered separately.
