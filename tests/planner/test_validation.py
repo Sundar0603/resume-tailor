@@ -412,6 +412,129 @@ class TestStrictSkillAdditions:
             planner.plan(make_resume(), make_job_analysis(), mode="strict")
 
 
+class TestActivityPhrasesAreNotSkills:
+    """
+    Rule 27, added in task 012 after a live run produced skill categories full
+    of job-description prose.
+
+    The planner prompt forbids this and lists the exact offending strings as
+    negative examples; qwen3.6 emitted them anyway. The Resume Generator
+    applies skill plans verbatim in pure Python, so they reached the resume.
+    """
+
+    def _plan_adding(self, *skills):
+        payload = make_payload()
+        payload["skills_plans"][0]["action"] = "REWRITE"
+        payload["skills_plans"][0]["skills_to_add"] = list(skills)
+        return payload
+
+    def _added(self, plan):
+        entry = next(sp for sp in plan.skills_plans if sp.category_id == "skill_001")
+        return entry.skills_to_add
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "Interoperability Strategies",
+            "Defect Handling",
+            "Code Quality",
+            "Optimization of Coding",
+            "API Versioning",
+            "Quality Assurance Processes",
+            "Application Software Development Lifecycle",
+            "Broad Acceptance Criteria",
+            "System Maintenance",
+            "API Functionality",
+            "SDLC",
+        ],
+    )
+    def test_activity_phrases_are_dropped(self, phrase):
+        planner = _planner(_json(self._plan_adding("Python", phrase)))
+        plan = planner.plan(make_resume(), make_job_analysis())
+        assert self._added(plan) == ["Python"]
+
+    @pytest.mark.parametrize(
+        "skill",
+        [
+            "Kubernetes",
+            "Spring Boot",
+            "PostgreSQL",
+            "System Design",
+            "Cloud Architecture",
+            "Unit Testing",
+            "Web Services",
+            "OAuth 2.0",
+            "Internet of Things",
+        ],
+    )
+    def test_real_skills_survive(self, skill):
+        planner = _planner(_json(self._plan_adding(skill)))
+        plan = planner.plan(make_resume(), make_job_analysis())
+        assert self._added(plan) == [skill]
+
+    def test_the_drop_is_reported(self):
+        planner = _planner(_json(self._plan_adding("Interoperability Strategies")))
+        planner.plan(make_resume(), make_job_analysis())
+        assert any(
+            "Interoperability Strategies" in note for note in planner.last_discarded
+        )
+
+    def test_existing_resume_skills_are_never_touched(self):
+        # The candidate's own wording is theirs. Only additions are filtered.
+        resume = make_resume()
+        resume.skills[0].skills = ["Python", "Query Optimization"]
+        planner = _planner(_json(make_payload()))
+
+        plan = planner.plan(resume, make_job_analysis())
+
+        assert resume.skills[0].skills == ["Python", "Query Optimization"]
+        assert planner.last_discarded == []
+        assert plan.skills_plans[0].skills_to_add == []
+
+    def test_a_generate_category_is_never_emptied(self):
+        # Emptying it would breach rule 24 and report a confusing schema error
+        # instead of this one.
+        payload = make_payload()
+        payload["skills_plans"].append(
+            {
+                "category_id": None,
+                "action": "GENERATE",
+                "priority": "HIGH",
+                "new_category_name": "Practices",
+                "skills_to_add": ["Defect Handling", "Code Quality"],
+                "skills_to_remove": [],
+                "reasoning": "The job stresses process maturity.",
+            }
+        )
+        planner = _planner(_json(payload))
+
+        plan = planner.plan(make_resume(), make_job_analysis())
+
+        # canonicalize() sorts skill lists, so compare as a set.
+        generated = next(sp for sp in plan.skills_plans if sp.category_id is None)
+        assert set(generated.skills_to_add) == {"Defect Handling", "Code Quality"}
+
+    def test_a_generate_category_is_partially_filtered(self):
+        payload = make_payload()
+        payload["skills_plans"].append(
+            {
+                "category_id": None,
+                "action": "GENERATE",
+                "priority": "HIGH",
+                "new_category_name": "Container & Orchestration",
+                "skills_to_add": ["Kubernetes", "Defect Handling"],
+                "skills_to_remove": [],
+                "reasoning": "The job needs container tooling.",
+            }
+        )
+        planner = _planner(_json(payload))
+
+        plan = planner.plan(make_resume(), make_job_analysis())
+
+        generated = next(sp for sp in plan.skills_plans if sp.category_id is None)
+        assert generated.skills_to_add == ["Kubernetes"]
+
+
 class TestRewriteStrategy:
 
     def test_rewrite_without_strategy_rejected(self):

@@ -3,7 +3,7 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 012 (Resume Generator). Baseline: **487 tests
+Status as of the end of task 012 (Resume Generator). Baseline: **636 tests
 passing** (339 before task 012). Update this file at the end of each task; do
 not rewrite it.
 
@@ -96,8 +96,8 @@ class Resume:                         # :118
 `total_experiences()`, `total_projects()`, `total_education()`,
 `total_highlights()`, `word_count()`.
 
-`EntitySource.GENERATED` exists but **nothing in `src/` sets it yet** — the
-Generator is the first component that will.
+`EntitySource.GENERATED` is set only by the Generator, on projects and skill
+categories it creates. Everything the Parser produces is `CANONICAL`.
 
 Public re-exports from `src/parser/__init__.py`: `ResumeParser`, all models,
 `EntitySource`, `ParserError`.
@@ -109,13 +109,17 @@ Public re-exports from `src/parser/__init__.py`: `ResumeParser`, all models,
 Format `{prefix}_{n:03d}`, 1-based, positional. Prefixes: `skill_`, `exp_`,
 `proj_`, `edu_`.
 
-Minted in exactly one place today — `src/parser/resume_parser.py:89-96` — after
-all section parsers return:
+Minted through `src/entity_ids.py`, the single home for the convention:
 
 ```python
-for i, proj in enumerate(projects, start=1):
-    proj.id = f"proj_{i:03d}"
+assign_sequential_ids(projects, PROJECT_PREFIX)   # Parser: number positionally
+mint_id(PROJECT_PREFIX, existing)                 # Generator: one new id
+mint_ids(PROJECT_PREFIX, existing, count)         # Generator: several
 ```
+
+The Parser calls `assign_sequential_ids` after all section parsers return
+(`src/parser/resume_parser.py`); the Generator calls `mint_id` for each entity
+it creates.
 
 IDs are **runtime-only**: they never appear in the Markdown source, and they are
 regenerated on every parse. They exist so the Planner, Generator, Revision
@@ -133,8 +137,15 @@ If `proj_001` is removed and a new project is generated, `count + 1` yields
 
 ```python
 ResumeValidator().validate(*, source_resume: Resume,
-                              generated_resume: Resume) -> ValidationResult
+                              generated_resume: Resume,
+                              mode: str = "STRICT") -> ValidationResult
 ```
+
+`mode` was added in task 012 and defaults to strict, so any caller that does
+not pass one keeps the original behaviour. It relaxes exactly one rule:
+experience `role` is immutable in strict and mutable in aggressive. A
+`PlanningMode` member may be passed directly — it is a `str` Enum — but the
+validation layer deliberately does not import from `src.planner`.
 
 Instance method, keyword-only, stateless, reads no files, mutates nothing.
 **It raises nothing.** Every problem comes back inside `ValidationResult`.
@@ -500,19 +511,155 @@ ResumeGenerator(provider).generate(
 - **Immutable fields are re-imposed in Python**, never trusted from the model:
   `company`, `duration`, `employment_type`, `location`, `id`, `source`, and
   `role` in strict mode.
-- **Strict mode is enforced in Python** by `constraints.enforce_strict` — every
-  technology/domain/skill must be in the source vocabulary, every number must
-  appear in the source prose (numbers 0–10 are tolerated as rephrasing). It is
-  a heuristic; it cannot catch a fabricated responsibility phrased in words the
-  resume already uses.
+- **Strict mode is enforced in Python**, in two layers:
+  - *Filtered, not raised on* — generated `technologies` and `domains` are
+    restricted to a vocabulary, preserving the model's ordering. **Strict:
+    source only.** **Aggressive: source ∪ job** (`job_vocabulary`, built from
+    `JobAnalysis`'s structured term lists — not `responsibilities` or
+    `qualifications`, which are prose and would admit nearly any word). A term
+    in neither the resume nor the job is invention, not tailoring: `Jest`
+    reached a generated resume exactly that way before aggressive had any
+    vocabulary at all. Filtering makes the invalid state unreachable rather
+    than merely detected — raising instead would discard a whole 65-second
+    generation over one stray label.
+  - *Raised on* — `constraints.enforce_strict` is the backstop: any surviving
+    unsupported term, and any number not in the source prose (0–10 tolerated
+    as rephrasing), raises `GenerationConstraintError`. It is a heuristic; it
+    cannot catch a fabricated responsibility phrased in words the resume
+    already uses.
+- **Weak terms never displace real ones.** `src/vocabulary.py` judges whether
+  a proposed `domains` / `technologies` / skill entry is worth taking. Two
+  independent tests, unioned as `is_weak_term`:
+  - `is_too_general` — refuses a phrase where *every* significant word is
+    generic software-process vocabulary. Lenient by construction: one specific
+    word saves it. "Application Software Development" fails; "SOC Automation"
+    survives on "SOC"; "Sales Planning" survives on "Sales".
+  - `looks_like_an_activity` — refuses a phrase that is specific but names
+    doing rather than knowing: "Interoperability Strategies", "Defect
+    Handling". In "A of B" the head is A, so "Optimization of Coding" is
+    judged on "optimization".
+
+  **The retention rule matters as much as the tests.** When any proposal is
+  refused, the resume's own terms are retained alongside the survivors;
+  a response with nothing refused replaces outright. Without this, a model
+  proposing six empty phrases and one thin real one leaves the field holding
+  only the thin one — observed live, where five rich domains collapsed to a
+  lone "API Versioning". Genuine retargeting still works: a job naming real
+  domains throughout has nothing refused, so it replaces cleanly.
+
+  The rationale, from the live run that motivated it: the backend JD names
+  exactly **one** technology in 83 lines (OCI) and its extracted "domains" are
+  its own section headings. There was no competitor for the slot, so swapping
+  out "SOC Platforms" bought nothing. Replacement is right when something
+  specific is competing for the space.
+- **Nothing is deleted unless something replaces it.** Applied at every point
+  the generator can remove content:
+  - *Skills inside a category* — a plan wanting to remove more than it offers
+    has its removals cancelled. Removing five to add one is a loss, not a
+    trade.
+  - *Whole skill categories and projects* — each successful `GENERATE` funds
+    exactly one `REMOVE`. Removals past that budget are cancelled.
+  - *Domains and technologies* — the retention rule above.
+
+  Every cancellation is reported on `last_discarded`. This means the generator
+  can only grow the resume; **shrinking to fit one page belongs to the Quality
+  Gate**, which should trim for page-fit rather than guessed relevance.
+
+- **A lopsided trade splits instead of clubbing.** When a plan wants to remove
+  more than it adds *and* named the incoming group, the original category is
+  left intact and the incoming skills get their own new `GENERATED` category.
+  Merging "Performance Profiling" into a category holding "Distributed
+  Systems, API Design, Caching" would put unrelated things under one heading.
+  With no rename supplied, the additions were meant to sit beside the existing
+  skills, so they merge in place.
+
+- **Everything the Quality Gate can trim is ordered strongest-first**, because
+  it trims from the bottom to fit one page. The rule to apply when adding any
+  new list to the resume: the last element must be the one you would give up.
+  - *Skill categories and projects* — sorted by plan priority. `sorted()` is
+    stable, so equal priorities keep plan order.
+  - *Skills within a category* — job keywords first, then source order, in the
+    order `required_skills → technologies → preferred_skills → keywords`.
+    Applied **once at the end of `_apply_skills`**, not on each path that
+    produces a category: `KEEP`, a cancelled removal and a cancelled lopsided
+    rewrite all return the source category untouched and would otherwise ship
+    in source order.
+  - *Highlights (bullets)* — the prompts ask for strongest-first and forbid
+    padding to the ceiling, and `_order_highlights` then **enforces** it with a
+    stable re-sort. Two signals only: how many of the job's terms the bullet
+    uses, plus `METRIC_WEIGHT` (2) if it carries a number. Ties keep the
+    model's order, so the scoring corrects clear mistakes without overruling
+    judgement it cannot see. Applied as a post-pass in `generate()` so `KEEP`
+    experiences and projects are ordered too.
+
+    This matters most for experiences: the two of them can never be *deleted*
+    (the validator requires exactly two), but their bullets can be trimmed, so
+    the order *within* each one decides what survives.
+
+    Note the planner cannot help here, and `highlight_indices` from task 011
+    would not have worked: the planner rates *source* bullets, the generator
+    *rewrites* them into new ones, and the mapping between old and new is N:M.
+    A priority attached to source bullet 3 has nothing to attach to afterwards.
+  - *Experiences are deliberately never reordered* — the validator compares
+    them positionally against the source, and a resume reads
+    reverse-chronologically regardless of relevance.
+
+- **Aggressive asks for one quantified outcome per experience and project.** A
+  bullet carrying a number is the one a reviewer believes. The prompt states
+  believability guardrails explicitly — the figure must follow from the work
+  described, be round and modest, stay in the ordinary range for what it
+  measures, never invent a checkable fact about the employer (headcount,
+  revenue, customers), and reuse a source number where one fits.
+  `_report_unquantified` counts compliance and notes any section that came
+  back without a number.
+
+  **Counted, not judged.** Whether a number is believable cannot be checked
+  mechanically — "cut latency 40%" and "cut latency 97%" are identical to a
+  regular expression. Strict mode never reaches this check: it forbids
+  introducing any number not already in the source.
+
+- **Mid-sentence capitalisation is corrected, not requested.** A model working
+  a job's vocabulary into prose Capitalises it — "rigorous Software Testing and
+  Code Quality assurance during Production Support" reads like a brochure.
+  `decapitalise_mid_sentence` fixes it over the summary and every highlight.
+
+  Three things make it safe:
+  - **Keyed to `GENERIC_TERMS`.** Only those words are lowercased, and a real
+    proper noun is never in that set — `Java`, `Redis`, `Terraform`, `Zoho`
+    pass through untouched.
+  - **Acronyms are skipped.** An all-uppercase word (`API`, `REST`, `OCI`) is
+    never altered, nor is a word starting a sentence.
+  - **Runs move as a unit**, and the source's own capitalisations are
+    protected. Lowercasing half a phrase leaves "system Design", which reads
+    worse than the original; and "Backend Software Engineer" / "Security
+    Operations Center" contain generic words but are the candidate's own
+    title-casing. `_source_capitalisations` collects them and a greedy
+    longest-match keeps them, even when they sit inside a longer run.
+
+- **The summary must keep its anchors.** The prompt requires the employer, the
+  years of experience and the named technologies to survive a rewrite —
+  trading "2 years at Zoho building platforms in Java, Spring Boot and Redis"
+  for "Application Software Development professional" gives up everything that
+  made the resume credible and gains a job title. `_report_lost_anchors`
+  checks it afterwards and notes any loss on `last_discarded`. **Reported, not
+  raised**: the summary is one paragraph, so there is no "move it to the
+  bottom" available and no safe way to graft a fact back into prose, and prose
+  judgement is not a correctness rule.
+
+- **An emptied skill category is dropped**, reported via `last_discarded`. A
+  heading with nothing under it renders worse than no heading, and the
+  validator only *warns* (`EMPTY_SKILL_CATEGORY`), so it would otherwise ship.
+  Emptying every category raises.
 - **Validates internally**: errors raise `GeneratorResponseValidationError`,
   warnings land on `generator.last_warnings`, soft failures on
   `generator.last_discarded`.
 - **No retries**, matching the rest of the codebase.
 
 Live baseline on `qwen3.6:latest`, `content/backend_resume.md` against
-`tests/fixtures/job_descriptions/backend.md`: strict 66 s, aggressive 69 s, both
-producing a resume with zero validator errors.
+`tests/fixtures/job_descriptions/backend.md`: strict 46 s, aggressive 41 s
+(sharing one JD analysis), both with zero validator errors and zero warnings.
+Skill retention against that job: strict 21/21 kept, aggressive 20/21 with 3
+added.
 
 ---
 
@@ -521,16 +668,38 @@ producing a resume with zero validator errors.
 - **`src/cli/_common.py` is not extracted.** `analyze.py` and `plan.py` already
   duplicate ~60 lines of provider bootstrap + error ladder. A third CLI command
   should trigger the extraction.
-- **No bullet-level targeting.** Plan models address whole entities; there is no
+- **No bullet-level targeting in the plan.** Plan models address whole entities; there is no
   `highlight_indices: List[int]`. The Revision Engine may need it.
 - **`backlog.txt`** holds three "Validation v2" test-coverage ideas.
-- **The planner picks weak skills.** On the first live aggressive run it added
-  JD *responsibility phrases* to skill categories as if they were skills —
-  "Interoperability Strategies", "Optimization of Coding", "Application
-  Software Development Lifecycle", "Broad Acceptance Criteria". They are
-  structurally valid, so nothing rejects them, but they read badly on a resume.
-  The fix belongs in the planner prompt (teach it that a skill is a noun a
-  recruiter could filter on), **not** in a new generator LLM call.
+- **Vocabulary control covers fields, not prose — accepted.** `technologies`
+  and `domains` are filtered against the vocabulary; the words *inside* a
+  highlight are not. A live aggressive run wrote "Automated infrastructure
+  provisioning with Terraform" into a generated project, and Terraform appears
+  in neither the resume nor the job description.
+
+  **Decided (with the user): this is acceptable inside a `GENERATED` entity.**
+  The project was already invented from a generation brief, so one more
+  invented tool inside it costs nothing — the candidate owns the whole entry in
+  an interview either way, and Terraform is a real tool that fits the work
+  described.
+
+  The distinction that still matters is *where* it lands. The same thing inside
+  a `CANONICAL` experience attaches an invented tool to real work at a named
+  employer, which invites a question with no answer behind it. The field-level
+  filter makes that less likely but does not prevent it in bullet prose.
+  Deleting a noun from a sentence is not something the generator can safely do,
+  and recognising "this word is a technology" needs a lexicon the project does
+  not have. Strict mode is unaffected: `enforce_strict` checks every number in
+  prose, and its term check covers the fields.
+
+- **Weak-term filtering is conservative on purpose.** `src/vocabulary.py`
+  spares words that could anchor a real domain or skill, so vague entries
+  still get through ("Performance Profiling", "Cloud Architecture"). Widening
+  the lists trades a weak term left on the resume for a real one deleted —
+  the wrong trade. Improve the prompts before touching the lists.
+- **Mid-sentence capitalisation** was a live-run regression that prompt rules
+  alone never held at temperature 0.4. It is now enforced in Python; the
+  prompt rule stays as the first line of defence.
 - **Latency.** analyze + plan + generate is ~66–70 s against a 180 s budget,
   leaving roughly 110 s for LaTeX, compilation, the quality gate and up to
   three revisions. Tighter than it looks. The generator's three calls are

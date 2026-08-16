@@ -285,6 +285,21 @@ Evaluated in this order; every message names the offending id.
 | 24    | `GENERATE` skill category with an empty `skills_to_add` *(added in task 012)*                                     | `ResumePlanValidationError`            |
 | 25    | `KEEP` / `REMOVE` skill category setting `new_category_name` *(added in task 012; `REWRITE` may now rename)*      | `ResumePlanValidationError`            |
 | 26    | `mode == STRICT` and `skills_to_add` names a skill absent from the whole resume *(added in task 012)*             | **none** — dropped, reported in output |
+| 27    | `skills_to_add` names an activity or is too general — both modes *(added in task 012)*                            | **none** — dropped, reported in output |
+
+> **Rule 27, added in task 012.** A live run produced skill categories full of
+> job-description prose: "Interoperability Strategies", "Defect Handling",
+> "Code Quality", "Optimization of Coding", "SDLC". The planner prompt now
+> forbids this and lists those exact strings as negative examples — and
+> qwen3.6 emitted several of them anyway, which is why the rule is also
+> enforced in Python (`_looks_like_an_activity`). The heuristic is
+> deliberately conservative: a multi-word phrase whose head noun names an
+> activity is dropped, and words that could head a real skill
+> ("architecture", "testing", "design", "services") are left out of the
+> denylist. It applies only to *additions* — a skill already on the resume is
+> the candidate's own wording and is never second-guessed. It never empties a
+> `GENERATE` category, which would breach rule 24 and report a confusing
+> schema error instead of this one.
 
 > **Amended in task 012.** Rule 12 originally made `new_category_name` a
 > `GENERATE`-only field. `REWRITE` may now set it to rename a category so its

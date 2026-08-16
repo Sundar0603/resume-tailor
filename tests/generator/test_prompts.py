@@ -87,6 +87,43 @@ class TestBudgets:
         assert "at most 6 highlights" in _projects_prompt()
 
 
+class TestTruncationOrdering:
+    """
+    Everything the Quality Gate can trim must be strongest-first, because it
+    trims from the bottom to fit one page.
+    """
+
+    def test_experience_prompt_asks_for_strongest_first(self):
+        prompt = _experiences_prompt()
+        assert "Order the highlights strongest first" in prompt
+        assert "trims this resume from the bottom" in prompt
+
+    def test_project_prompt_asks_for_strongest_first(self):
+        prompt = _projects_prompt()
+        assert "Order the highlights strongest first" in prompt
+
+    def test_aggressive_asks_for_a_quantified_outcome_per_section(self):
+        prompt = _experiences_prompt(PlanningMode.AGGRESSIVE)
+        assert "at least one quantified outcome" in prompt
+        assert "must be believable" in prompt
+
+    def test_strict_never_asks_for_a_quantified_outcome(self):
+        # Strict forbids introducing any number not already in the source, so
+        # asking for one would contradict the mode.
+        prompt = _experiences_prompt(PlanningMode.STRICT)
+        assert "at least one quantified outcome" not in prompt
+
+    def test_believability_guardrails_are_stated(self):
+        prompt = _experiences_prompt(PlanningMode.AGGRESSIVE)
+        # The specific failure modes, not just "be realistic".
+        assert "round and modest" in prompt
+        assert "never invents a fact about the employer" in prompt
+
+    def test_prompts_forbid_padding_to_the_limit(self):
+        assert "Do not pad to the limit" in _experiences_prompt()
+        assert "Do not pad to the limit" in _projects_prompt()
+
+
 class TestPlanProjection:
     def _rewrite_plan(self):
         return make_plan(

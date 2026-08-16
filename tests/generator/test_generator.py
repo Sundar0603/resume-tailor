@@ -152,6 +152,17 @@ class TestImmutability:
         assert rewritten.source == original.source
 
 
+def _notes_matching(generator, needle):
+    """Notes mentioning `needle`. Lets a test assert about its own concern
+    without breaking when an unrelated note is added."""
+    return [n for n in generator.last_discarded if needle in n]
+
+
+def _by_id(entities, entity_id):
+    """Select an entity by id; positions now depend on priority ordering."""
+    return next(e for e in entities if e.id == entity_id)
+
+
 def _rewrite_experience_plan(experience_id: str, mode: str = "AGGRESSIVE"):
     """A plan that rewrites one experience and keeps everything else."""
     plan_payload = {
@@ -269,8 +280,7 @@ class TestSkills:
         )
         result, _, _ = _generate([], plan=plan)
 
-        new_category = result.skills[-1]
-        assert new_category.id == "skill_003"
+        new_category = _by_id(result.skills, "skill_003")
         assert new_category.source == EntitySource.GENERATED
         assert new_category.category == "Container & Orchestration"
         assert set(new_category.skills) == {"Docker", "Kubernetes"}
@@ -315,21 +325,60 @@ class TestSkills:
         assert renamed.source == EntitySource.CANONICAL
         assert renamed.category == "Backend & Distributed Systems"
 
-    def test_remove_drops_the_category(self):
+    def _remove(self, category_id):
+        return {
+            "category_id": category_id,
+            "action": "REMOVE",
+            "priority": "LOW",
+            "new_category_name": None,
+            "skills_to_add": [],
+            "skills_to_remove": [],
+            "reasoning": "Not relevant to this job.",
+        }
+
+    def _generate_category(self, name="Container & Orchestration", skills=None):
+        return {
+            "category_id": None,
+            "action": "GENERATE",
+            "priority": "HIGH",
+            "new_category_name": name,
+            "skills_to_add": skills or ["Docker", "Kubernetes"],
+            "skills_to_remove": [],
+            "reasoning": "The job needs container tooling.",
+        }
+
+    def test_unfunded_removal_is_cancelled(self):
+        # Nothing is generated to take the slot, so the category stays. A plan
+        # that deletes without generating asks the resume to shrink for free.
+        plan = self._skills_plan(self._keep("skill_001"), self._remove("skill_002"))
+        result, generator, _ = _generate([], plan=plan)
+
+        assert [c.id for c in result.skills] == ["skill_001", "skill_002"]
+        assert any("skill_002" in note for note in generator.last_discarded)
+
+    def test_a_generated_category_funds_a_removal(self):
         plan = self._skills_plan(
             self._keep("skill_001"),
-            {
-                "category_id": "skill_002",
-                "action": "REMOVE",
-                "priority": "LOW",
-                "new_category_name": None,
-                "skills_to_add": [],
-                "skills_to_remove": [],
-                "reasoning": "Not relevant to this job.",
-            },
+            self._remove("skill_002"),
+            self._generate_category(),
         )
-        result, _, _ = _generate([], plan=plan)
-        assert [c.id for c in result.skills] == ["skill_001"]
+        result, generator, _ = _generate([], plan=plan)
+
+        assert sorted(c.id for c in result.skills) == ["skill_001", "skill_003"]
+        assert not _notes_matching(generator, "cancelled")
+
+    def test_removals_beyond_the_budget_are_cancelled(self):
+        # Two removals, one generated category: the first removal is funded,
+        # the second is not.
+        plan = self._skills_plan(
+            self._remove("skill_001"),
+            self._remove("skill_002"),
+            self._generate_category(),
+        )
+        result, generator, _ = _generate([], plan=plan)
+
+        assert sorted(c.id for c in result.skills) == ["skill_002", "skill_003"]
+        assert any("skill_002" in note for note in generator.last_discarded)
 
     def test_job_keywords_are_ordered_first(self):
         # The job requires Python and AWS; Docker is listed as a technology.
@@ -347,7 +396,198 @@ class TestSkills:
             },
         )
         result, _, _ = _generate([], plan=plan)
-        assert result.skills[1].skills == ["AWS", "Docker"]
+        assert _by_id(result.skills, "skill_002").skills == ["AWS", "Docker"]
+
+    def test_a_rewrite_with_no_additions_keeps_its_skills(self):
+        # The plan intended a trade. Its additions were refused upstream, so
+        # executing the removal half alone would turn the trade into a
+        # deletion — which is how five real skills once vanished with nothing
+        # taking their place.
+        plan = self._skills_plan(
+            {
+                "category_id": "skill_001",
+                "action": "REWRITE",
+                "priority": "HIGH",
+                "new_category_name": None,
+                "skills_to_add": [],
+                "skills_to_remove": ["Python", "Go"],
+                "reasoning": "None of these match the job.",
+            },
+            self._keep("skill_002"),
+        )
+        result, generator, _ = _generate([], plan=plan)
+
+        assert result.skills[0].skills == ["Python", "Go"]
+        assert any("skill_001" in note for note in generator.last_discarded)
+
+    def test_a_cancelled_rewrite_also_drops_its_rename(self):
+        # A category renamed for skills that never arrived is mislabelled.
+        plan = self._skills_plan(
+            {
+                "category_id": "skill_001",
+                "action": "REWRITE",
+                "priority": "HIGH",
+                "new_category_name": "Testing & Quality Assurance",
+                "skills_to_add": [],
+                "skills_to_remove": ["Python", "Go"],
+                "reasoning": "Retarget to the job's testing focus.",
+            },
+            self._keep("skill_002"),
+        )
+        result, _, _ = _generate([], plan=plan)
+
+        assert result.skills[0].category == "Languages"
+        assert result.skills[0].skills == ["Python", "Go"]
+
+    def test_a_rename_without_removals_still_applies(self):
+        # Renaming deletes nothing, so it is not blocked.
+        plan = self._skills_plan(
+            {
+                "category_id": "skill_001",
+                "action": "REWRITE",
+                "priority": "HIGH",
+                "new_category_name": "Backend & API Development",
+                "skills_to_add": [],
+                "skills_to_remove": [],
+                "reasoning": "Match the job's phrasing.",
+            },
+            self._keep("skill_002"),
+        )
+        result, _, _ = _generate([], plan=plan)
+
+        assert result.skills[0].category == "Backend & API Development"
+        assert result.skills[0].skills == ["Python", "Go"]
+
+    def test_no_skill_categories_at_all_raises(self):
+        # Defensive: the planner guarantees total coverage, so this is only
+        # reachable from a hand-built plan.
+        plan = self._skills_plan()
+        generator = ResumeGenerator(SequencedProvider([]))
+        with pytest.raises(GenerationConstraintError):
+            generator.generate(
+                source_resume=make_resume(),
+                job_analysis=make_job_analysis(),
+                resume_plan=plan,
+            )
+
+    def test_a_lopsided_trade_splits_into_a_new_category(self):
+        # Five out, one in. Forcing the incoming skill into the existing
+        # category would club unrelated things together under one heading, so
+        # it gets its own category and the original is left intact.
+        resume = make_resume()
+        resume.skills[0] = resume.skills[0].model_copy(
+            update={
+                "category": "Concepts",
+                "skills": ["Distributed Systems", "API Design", "Caching"],
+            }
+        )
+        plan = self._skills_plan(
+            {
+                "category_id": "skill_001",
+                "action": "REWRITE",
+                "priority": "HIGH",
+                "new_category_name": "Development Practices & Standards",
+                "skills_to_add": ["Performance Profiling"],
+                "skills_to_remove": ["Distributed Systems", "API Design", "Caching"],
+                "reasoning": "Retarget to the job's process focus.",
+            },
+            self._keep("skill_002"),
+        )
+        result, generator, _ = _generate([], plan=plan, resume=resume)
+
+        original = _by_id(result.skills, "skill_001")
+        assert original.category == "Concepts"
+        assert original.skills == ["Distributed Systems", "API Design", "Caching"]
+
+        split = _by_id(result.skills, "skill_003")
+        assert split.category == "Development Practices & Standards"
+        assert split.skills == ["Performance Profiling"]
+        assert split.source == EntitySource.GENERATED
+        assert any("skill_001" in note for note in generator.last_discarded)
+
+    def test_an_even_trade_happens_in_place(self):
+        # One out, one in: no clubbing risk, so no split.
+        plan = self._skills_plan(
+            {
+                "category_id": "skill_001",
+                "action": "REWRITE",
+                "priority": "HIGH",
+                "new_category_name": None,
+                "skills_to_add": ["Rust"],
+                "skills_to_remove": ["Go"],
+                "reasoning": "Match the job's language list.",
+            },
+            self._keep("skill_002"),
+        )
+        result, generator, _ = _generate([], plan=plan)
+
+        languages = _by_id(result.skills, "skill_001")
+        assert "Rust" in languages.skills
+        assert "Go" not in languages.skills
+        assert len(result.skills) == 2
+        assert not _notes_matching(generator, "cancelled")
+
+    def test_a_lopsided_trade_without_a_name_merges_in_place(self):
+        # No rename means the additions were meant to sit beside the existing
+        # skills, so there is nothing to split off.
+        plan = self._skills_plan(
+            {
+                "category_id": "skill_001",
+                "action": "REWRITE",
+                "priority": "HIGH",
+                "new_category_name": None,
+                "skills_to_add": ["Rust"],
+                "skills_to_remove": ["Python", "Go"],
+                "reasoning": "Match the job's language list.",
+            },
+            self._keep("skill_002"),
+        )
+        result, _, _ = _generate([], plan=plan)
+
+        languages = _by_id(result.skills, "skill_001")
+        assert set(languages.skills) == {"Python", "Go"}
+        assert len(result.skills) == 2
+
+    def test_a_kept_category_still_gets_its_skills_ordered(self):
+        # KEEP returns the source category untouched, so without ordering at
+        # the end it would ship in source order — burying the job's own
+        # vocabulary at the end of the line a recruiter skims.
+        resume = make_resume()
+        resume.skills[1] = resume.skills[1].model_copy(
+            update={"skills": ["Docker", "AWS"]}
+        )
+        plan = self._skills_plan(self._keep("skill_001"), self._keep("skill_002"))
+        result, _, _ = _generate([], plan=plan, resume=resume)
+
+        # The job requires AWS and lists Docker only as a technology.
+        assert _by_id(result.skills, "skill_002").skills == ["AWS", "Docker"]
+
+    def test_a_cancelled_removal_still_gets_its_skills_ordered(self):
+        resume = make_resume()
+        resume.skills[1] = resume.skills[1].model_copy(
+            update={"skills": ["Docker", "AWS"]}
+        )
+        plan = self._skills_plan(self._keep("skill_001"), self._remove("skill_002"))
+        result, _, _ = _generate([], plan=plan, resume=resume)
+
+        assert _by_id(result.skills, "skill_002").skills == ["AWS", "Docker"]
+
+    def test_categories_are_ordered_by_priority(self):
+        # The Quality Gate trims from the bottom, so least relevant goes last.
+        plan = self._skills_plan(
+            dict(self._keep("skill_001"), priority="LOW"),
+            dict(self._keep("skill_002"), priority="CRITICAL"),
+        )
+        result, _, _ = _generate([], plan=plan)
+        assert [c.id for c in result.skills] == ["skill_002", "skill_001"]
+
+    def test_equal_priority_keeps_plan_order(self):
+        plan = self._skills_plan(
+            dict(self._keep("skill_001"), priority="HIGH"),
+            dict(self._keep("skill_002"), priority="HIGH"),
+        )
+        result, _, _ = _generate([], plan=plan)
+        assert [c.id for c in result.skills] == ["skill_001", "skill_002"]
 
     def test_minted_id_survives_a_removal(self):
         # skill_001 is removed and a category generated. The new id must be
@@ -374,7 +614,7 @@ class TestSkills:
             },
         )
         result, _, _ = _generate([], plan=plan)
-        assert [c.id for c in result.skills] == ["skill_002", "skill_003"]
+        assert sorted(c.id for c in result.skills) == ["skill_002", "skill_003"]
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +624,19 @@ class TestSkills:
 
 def _project_plan(*entries, mode="AGGRESSIVE"):
     return make_plan(mode=mode, project_plans=list(entries))
+
+
+def _remove_project(project_id):
+    return {
+        "project_id": project_id,
+        "action": "REMOVE",
+        "priority": "LOW",
+        "rewrite_strategy": None,
+        "generation_brief": None,
+        "keywords_to_include": [],
+        "themes_to_emphasize": [],
+        "reasoning": "Not relevant.",
+    }
 
 
 def _keep_project(project_id):
@@ -424,8 +677,7 @@ class TestProjects:
             plan=plan,
         )
 
-        new_project = result.projects[-1]
-        assert new_project.id == "proj_003"
+        new_project = _by_id(result.projects, "proj_003")
         assert new_project.source == EntitySource.GENERATED
         assert new_project.name == "Event Bus"
 
@@ -447,7 +699,7 @@ class TestProjects:
         result, _, _ = _generate(
             [projects_response(project_entry(None, name="Event Bus"))], plan=plan
         )
-        assert result.projects[-1].repository is None
+        assert _by_id(result.projects, "proj_003").repository is None
 
     def test_rewrite_preserves_id_source_and_repository(self):
         plan = _project_plan(
@@ -478,44 +730,117 @@ class TestProjects:
         assert rewritten.repository == "github.com/janedoe/task-tracker"
         assert rewritten.name == "Task Tracker CLI"
 
-    def test_remove_drops_the_project(self):
+    def test_unfunded_project_removal_is_cancelled(self):
+        # Dropping a real project with nothing to show in its place only makes
+        # the resume thinner.
+        plan = _project_plan(_remove_project("proj_001"), _keep_project("proj_002"))
+        result, generator, _ = _generate([], plan=plan)
+
+        assert sorted(p.id for p in result.projects) == ["proj_001", "proj_002"]
+        assert any("proj_001" in note for note in generator.last_discarded)
+
+    def test_a_generated_project_funds_a_removal(self):
+        plan = _project_plan(
+            _remove_project("proj_001"),
+            _keep_project("proj_002"),
+            {
+                "project_id": None,
+                "action": "GENERATE",
+                "priority": "HIGH",
+                "rewrite_strategy": None,
+                "generation_brief": "An event-driven microservices demo.",
+                "keywords_to_include": [],
+                "themes_to_emphasize": [],
+                "reasoning": "The job wants event-driven experience.",
+            },
+        )
+        result, generator, _ = _generate(
+            [projects_response(project_entry(None, name="Event Bus"))], plan=plan
+        )
+
+        assert sorted(p.id for p in result.projects) == ["proj_002", "proj_003"]
+        assert not _notes_matching(generator, "cancelled")
+
+    def test_project_removals_beyond_the_budget_are_cancelled(self):
         source = make_resume()
         source.projects.append(
             copy.deepcopy(source.projects[0]).model_copy(update={"id": "proj_003"})
         )
         plan = _project_plan(
-            {
-                "project_id": "proj_001",
-                "action": "REMOVE",
-                "priority": "LOW",
-                "rewrite_strategy": None,
-                "generation_brief": None,
-                "keywords_to_include": [],
-                "themes_to_emphasize": [],
-                "reasoning": "Not relevant.",
-            },
-            _keep_project("proj_002"),
+            _remove_project("proj_001"),
+            _remove_project("proj_002"),
             _keep_project("proj_003"),
-        )
-        result, _, _ = _generate([], plan=plan, resume=source)
-        assert [p.id for p in result.projects] == ["proj_002", "proj_003"]
-
-    def test_dropping_below_two_projects_raises(self):
-        plan = _project_plan(
             {
-                "project_id": "proj_001",
-                "action": "REMOVE",
-                "priority": "LOW",
+                "project_id": None,
+                "action": "GENERATE",
+                "priority": "HIGH",
                 "rewrite_strategy": None,
-                "generation_brief": None,
+                "generation_brief": "An event-driven microservices demo.",
                 "keywords_to_include": [],
                 "themes_to_emphasize": [],
-                "reasoning": "Not relevant.",
+                "reasoning": "The job wants event-driven experience.",
             },
-            _keep_project("proj_002"),
         )
-        provider = SequencedProvider([])
-        generator = ResumeGenerator(provider)
+        result, generator, _ = _generate(
+            [projects_response(project_entry(None, name="Event Bus"))],
+            plan=plan,
+            resume=source,
+        )
+
+        # One generated project funds one removal; the second is cancelled.
+        assert sorted(p.id for p in result.projects) == ["proj_002", "proj_003", "proj_004"]
+        assert any("proj_002" in note for note in generator.last_discarded)
+
+    def test_projects_are_ordered_by_priority(self):
+        plan = _project_plan(
+            dict(_keep_project("proj_001"), priority="LOW"),
+            dict(_keep_project("proj_002"), priority="CRITICAL"),
+        )
+        result, _, _ = _generate([], plan=plan)
+        assert [p.id for p in result.projects] == ["proj_002", "proj_001"]
+
+    def test_equal_priority_keeps_plan_order(self):
+        plan = _project_plan(
+            dict(_keep_project("proj_001"), priority="MEDIUM"),
+            dict(_keep_project("proj_002"), priority="MEDIUM"),
+        )
+        result, _, _ = _generate([], plan=plan)
+        assert [p.id for p in result.projects] == ["proj_001", "proj_002"]
+
+    def test_experiences_are_never_reordered(self):
+        # Experiences are the one section that must not be sorted: the
+        # validator compares them positionally against the source, and a
+        # resume reads in reverse-chronological order regardless of relevance.
+        plan = make_plan(
+            experience_plans=[
+                dict(
+                    experience_id="exp_001",
+                    action="KEEP",
+                    priority="LOW",
+                    rewrite_strategy=None,
+                    keywords_to_include=[],
+                    themes_to_emphasize=[],
+                    reasoning="Less relevant.",
+                ),
+                dict(
+                    experience_id="exp_002",
+                    action="KEEP",
+                    priority="CRITICAL",
+                    rewrite_strategy=None,
+                    keywords_to_include=[],
+                    themes_to_emphasize=[],
+                    reasoning="Closest match.",
+                ),
+            ]
+        )
+        result, _, _ = _generate([], plan=plan)
+        assert [e.id for e in result.experiences] == ["exp_001", "exp_002"]
+
+    def test_no_projects_at_all_raises(self):
+        # Defensive: the planner guarantees total coverage, so this is only
+        # reachable from a hand-built plan.
+        plan = _project_plan()
+        generator = ResumeGenerator(SequencedProvider([]))
         with pytest.raises(GenerationConstraintError):
             generator.generate(
                 source_resume=make_resume(),
@@ -701,6 +1026,72 @@ class TestValidation:
 # ---------------------------------------------------------------------------
 
 
+class TestSummaryAnchors:
+    """
+    A summary that trades concrete facts for a job title gains nothing.
+
+    Reported rather than raised: prose judgement is not a correctness rule.
+    """
+
+    def _plan(self):
+        return make_plan(
+            summary_plan={
+                "action": "REWRITE",
+                "priority": "HIGH",
+                "reasoning": "Retarget to the job.",
+                "keywords_to_include": [],
+            }
+        )
+
+    def _summary_mentioning(self, text):
+        return summary_response(text + " " + "filler " * 25)
+
+    def test_dropping_the_employer_is_reported(self):
+        resume = make_resume()
+        resume.summary = "Backend engineer with two years at Acme Corp using Python."
+        _, generator, _ = _generate(
+            [self._summary_mentioning("Application Software Development professional.")],
+            plan=self._plan(),
+            resume=resume,
+        )
+        assert any("Acme Corp" in note for note in generator.last_discarded)
+
+    def test_keeping_the_employer_is_not_reported(self):
+        resume = make_resume()
+        resume.summary = "Backend engineer with two years at Acme Corp using Python."
+        _, generator, _ = _generate(
+            [self._summary_mentioning("Backend engineer at Acme Corp using Python.")],
+            plan=self._plan(),
+            resume=resume,
+        )
+        assert not _notes_matching(generator, "summary")
+
+    def test_dropping_every_named_technology_is_reported(self):
+        resume = make_resume()
+        resume.summary = "Backend engineer at Acme Corp building services in Python."
+        _, generator, _ = _generate(
+            [self._summary_mentioning("Engineer at Acme Corp delivering features.")],
+            plan=self._plan(),
+            resume=resume,
+        )
+        assert any("technology" in note for note in generator.last_discarded)
+
+    def test_keeping_one_named_technology_is_enough(self):
+        resume = make_resume()
+        resume.summary = "Backend engineer at Acme Corp using Python and Go."
+        _, generator, _ = _generate(
+            [self._summary_mentioning("Engineer at Acme Corp shipping Python services.")],
+            plan=self._plan(),
+            resume=resume,
+        )
+        assert not _notes_matching(generator, "summary")
+
+    def test_a_kept_summary_is_never_reported(self):
+        # KEEP does not call the model at all.
+        _, generator, _ = _generate([])
+        assert not _notes_matching(generator, "summary")
+
+
 class TestStatelessness:
     def test_warnings_reset_between_calls(self):
         provider = SequencedProvider([summary_response("Word " * 200)])
@@ -733,3 +1124,234 @@ class TestStatelessness:
             resume_plan=make_plan(),
         )
         assert first == second
+
+
+# ---------------------------------------------------------------------------
+# Bullet ordering
+# ---------------------------------------------------------------------------
+
+
+class TestHighlightOrdering:
+    """
+    The two experiences cannot be deleted, but their bullets can be trimmed —
+    from the bottom. So the order *within* each one decides what survives.
+
+    Scored on two signals only: how many of the job's terms the bullet uses,
+    and whether it carries a number. The sort is stable, so equal scores keep
+    the order the model wrote them in.
+    """
+
+    def _plan(self):
+        return _rewrite_experience_plan("exp_002")
+
+    def _with_highlights(self, *highlights):
+        result, _, _ = _generate(
+            [
+                experiences_response(
+                    experience_entry("exp_002", highlights=list(highlights))
+                )
+            ],
+            plan=self._plan(),
+        )
+        return result.experiences[1].highlights
+
+    def test_a_job_term_beats_no_job_term(self):
+        # The job requires Python and AWS.
+        ordered = self._with_highlights(
+            "Wrote documentation for the team.",
+            "Built services in Python.",
+        )
+        assert ordered[0] == "Built services in Python."
+
+    def test_a_metric_beats_a_bare_bullet(self):
+        ordered = self._with_highlights(
+            "Improved the deployment process.",
+            "Cut latency by 30%.",
+        )
+        assert ordered[0] == "Cut latency by 30%."
+
+    def test_more_job_terms_outrank_a_lone_metric(self):
+        # A number is persuasive, not decisive: METRIC_WEIGHT is 2, so three
+        # job terms win.
+        ordered = self._with_highlights(
+            "Reduced cost by 30%.",
+            "Built Python and AWS services for the backend.",
+        )
+        assert ordered[0] == "Built Python and AWS services for the backend."
+
+    def test_equal_scores_keep_the_models_order(self):
+        ordered = self._with_highlights(
+            "Built services in Python.",
+            "Deployed services with Python.",
+        )
+        assert ordered == [
+            "Built services in Python.",
+            "Deployed services with Python.",
+        ]
+
+    def test_the_weakest_bullet_ends_up_last(self):
+        ordered = self._with_highlights(
+            "Attended team meetings.",
+            "Cut Python API latency by 30%.",
+            "Shipped an AWS backend service.",
+        )
+        assert ordered[-1] == "Attended team meetings."
+
+    def test_a_single_bullet_is_untouched(self):
+        assert self._with_highlights("Only one bullet.") == ["Only one bullet."]
+
+    def test_kept_experiences_are_ordered_too(self):
+        # KEEP copies the source verbatim, so without the post-pass its bullets
+        # would ship in source order.
+        resume = make_resume()
+        resume.experiences[0] = resume.experiences[0].model_copy(
+            update={
+                "highlights": [
+                    "Attended team meetings.",
+                    "Built Python services on AWS.",
+                ]
+            }
+        )
+        result, _, _ = _generate([], resume=resume)
+        assert result.experiences[0].highlights[0] == "Built Python services on AWS."
+
+    def test_projects_are_ordered_too(self):
+        resume = make_resume()
+        resume.projects[0] = resume.projects[0].model_copy(
+            update={
+                "highlights": [
+                    "Wrote a README.",
+                    "Built a Python CLI on AWS.",
+                ]
+            }
+        )
+        result, _, _ = _generate([], resume=resume)
+        assert _by_id(result.projects, "proj_001").highlights[0] == (
+            "Built a Python CLI on AWS."
+        )
+
+
+class TestQuantifiedOutcomes:
+    """
+    Aggressive mode asks for at least one number per experience and project.
+    A bullet with a figure is the one a reviewer believes.
+
+    Counted, not judged: whether a number is *believable* cannot be checked
+    mechanically — "cut latency 40%" and "cut latency 97%" look identical to a
+    regular expression — so the prompt carries that rule and this only counts.
+    """
+
+    def _plan(self, mode):
+        return _rewrite_experience_plan("exp_002", mode=mode)
+
+    def _run(self, mode, highlights):
+        return _generate(
+            [
+                experiences_response(
+                    experience_entry("exp_002", highlights=highlights)
+                )
+            ],
+            plan=self._plan(mode),
+        )
+
+    def test_a_section_without_a_number_is_reported(self):
+        _, generator, _ = self._run(
+            "AGGRESSIVE", ["Shipped a payments service."]
+        )
+        assert any(
+            "exp_002" in n and "quantified" in n for n in generator.last_discarded
+        )
+
+    def test_a_section_with_a_number_is_not_reported(self):
+        _, generator, _ = self._run(
+            "AGGRESSIVE", ["Shipped a payments service, cutting latency by 30%."]
+        )
+        assert not [
+            n for n in generator.last_discarded if "exp_002" in n and "quantified" in n
+        ]
+
+    def test_one_number_anywhere_in_the_section_is_enough(self):
+        _, generator, _ = self._run(
+            "AGGRESSIVE",
+            ["Owned the payments service.", "Cut latency by 30%."],
+        )
+        assert not [
+            n for n in generator.last_discarded if "exp_002" in n and "quantified" in n
+        ]
+
+    def test_projects_are_checked_too(self):
+        # make_resume()'s projects carry no numbers.
+        _, generator, _ = _generate([])
+        # An all-KEEP plan is AGGRESSIVE by default in make_plan().
+        assert any(
+            "proj_001" in n and "quantified" in n for n in generator.last_discarded
+        )
+
+    def test_strict_mode_never_reports_it(self):
+        # Strict forbids introducing any number not already in the source, so
+        # demanding one would be contradictory.
+        _, generator, _ = self._run("STRICT", ["Shipped a payments service."])
+        assert not [n for n in generator.last_discarded if "quantified" in n]
+
+
+class TestCapitalisation:
+    """
+    Job vocabulary worked into prose comes back Capitalised; the pass
+    lowercases it. What the source already capitalised is left alone.
+    """
+
+    def _plan(self):
+        return make_plan(
+            summary_plan={
+                "action": "REWRITE",
+                "priority": "HIGH",
+                "reasoning": "Retarget to the job.",
+                "keywords_to_include": [],
+            }
+        )
+
+    def _summary(self, text, resume=None):
+        result, _, _ = _generate(
+            [summary_response(text)], plan=self._plan(), resume=resume
+        )
+        return result.summary
+
+    def test_process_words_are_lowercased(self):
+        out = self._summary(
+            "Engineer ensuring Code Quality and Production Support. " + "word " * 25
+        )
+        assert "code quality" in out
+        assert "Code Quality" not in out
+
+    def test_the_sources_own_capitalisation_survives(self):
+        resume = make_resume()
+        resume.summary = "Backend Software Engineer at Acme Corp using Python."
+        out = self._summary(
+            "Seasoned Backend Software Engineer at Acme Corp. " + "word " * 25,
+            resume=resume,
+        )
+        assert "Backend Software Engineer" in out
+
+    def test_proper_nouns_survive(self):
+        out = self._summary(
+            "Engineer using Java, Redis and Spring Boot daily. " + "word " * 25
+        )
+        for name in ("Java", "Redis", "Spring Boot"):
+            assert name in out
+
+    def test_highlights_are_cleaned_too(self):
+        plan = _rewrite_experience_plan("exp_002")
+        result, _, _ = _generate(
+            [
+                experiences_response(
+                    experience_entry(
+                        "exp_002",
+                        highlights=["Ensured Code Quality across 20 services."],
+                    )
+                )
+            ],
+            plan=plan,
+        )
+        assert result.experiences[1].highlights[0] == (
+            "Ensured code quality across 20 services."
+        )

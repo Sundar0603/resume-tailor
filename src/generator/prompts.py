@@ -47,6 +47,24 @@ In this mode you may:
 - Retitle a role to match the target job — "Software Engineer" may become \
 "Backend Engineer" when the work supports that reading.
 
+Give every experience and every project at least one quantified outcome. A bullet \
+with a number in it is the one a reviewer believes and remembers, and a section \
+without any reads as unmeasured work.
+
+A quantified outcome must be believable. That means:
+- It follows from the work the bullet actually describes. Query tuning yields a \
+latency or throughput figure; it does not yield a revenue figure.
+- It is round and modest, the way a real engineer recalls it: "cut query time by \
+around 40%", not "cut query time by 43.7%".
+- It stays inside the ordinary range for the thing being measured. Latency and cost \
+reductions live between 10% and 80%; uptime lives between 99% and 99.99%; a rewrite \
+does not make something 500% faster.
+- It never invents a fact about the employer. Team size, headcount, revenue, customer \
+counts and funding are checkable, and a reviewer who checks one and finds it wrong \
+stops believing the rest.
+- Where the source resume already gives a number that fits, reuse that number rather \
+than inventing a second one.
+
 Even in this mode you must not:
 - Change the employer, the dates, the employment type, or the location of any \
 experience.
@@ -93,8 +111,18 @@ Writing rules:
 Do not start with "I" or the candidate's name.
 - Lead with what the candidate is, then what they have done, then what they bring to \
 this role.
+- Keep the specifics the current summary already has: the employer, the years of \
+experience, and the named technologies. Those are what make the rest believable. \
+Replacing "Backend Software Engineer with 2 years at Zoho building platforms in Java, \
+Spring Boot and Redis" with "Application Software Development professional" trades a \
+fact for a job title and gains nothing — the job's own words belong *around* those \
+specifics, not instead of them.
 - Work the listed keywords in naturally. A keyword that cannot be used honestly is \
 left out.
+- Write normal sentence case. Do not capitalise a keyword mid-sentence to make it \
+stand out: write "code quality assurance", not "Code Quality assurance"; "production \
+support", not "production Support". Only proper nouns are capitalised — product and \
+technology names like Java, Spring Boot, AWS.
 - No headings, no bullet points, no markdown.
 
 Plan for the summary:
@@ -155,10 +183,18 @@ Writing rules:
 - Rewrite only the experiences listed in the plan. Return one entry for each, keyed by \
 the experience_id given.
 - Write at most {max_highlights} highlights per experience. Fewer, sharper bullets beat \
-more, weaker ones.
+more, weaker ones. Do not pad to the limit: if the source has four highlights worth \
+keeping, return four.
+- Order the highlights strongest first. A later stage trims this resume from the \
+bottom to fit one page, so the last bullet in your list must be the one you would give \
+up first. Lead with the bullet that best matches the job and carries the most concrete \
+outcome.
 - Start every highlight with a strong past-tense verb. No pronouns, no trailing period \
 inconsistency — be consistent.
 - Each highlight states what was done and why it mattered. Avoid "Responsible for".
+- Write normal sentence case. Do not capitalise a keyword mid-sentence to make it \
+stand out: write "software testing", not "Software Testing". Only proper nouns are \
+capitalised — product and technology names like Java, Spring Boot, AWS.
 - technologies lists concrete tools and languages. domains lists problem areas, such \
 as payments, observability, or distributed systems.
 - Work the listed keywords and themes in naturally. Anything that cannot be used \
@@ -216,7 +252,10 @@ Writing rules:
 project_id.
 - A plan entry with a null project_id and a generation_brief is a new project. Return \
 project_id as null and invent a fitting name and type from the brief.
-- Write at most {max_highlights} highlights per project.
+- Write at most {max_highlights} highlights per project. Do not pad to the limit.
+- Order the highlights strongest first. A later stage trims this resume from the \
+bottom to fit one page, so the last bullet in your list must be the one you would give \
+up first.
 - Start every highlight with a strong past-tense verb. Each states what was built and \
 what it achieved.
 - type is a short category such as "Personal", "Open Source", "Academic", or \

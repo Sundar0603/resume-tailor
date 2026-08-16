@@ -19,6 +19,7 @@ from src.generator import (
 from src.parser.models import SkillCategory
 
 from .conftest import (
+    projects_response,
     SequencedProvider,
     experience_entry,
     experiences_response,
@@ -194,7 +195,9 @@ class TestAggressiveModeSkipsChecks:
             )
         )
 
-    def test_aggressive_permits_new_technologies_and_metrics(self):
+    def test_aggressive_permits_a_job_technology_and_new_metrics(self):
+        # Kubernetes is in the job description but not the resume. Aggressive
+        # tailoring is exactly what that case is for.
         generator = ResumeGenerator(
             SequencedProvider([self._fabricating_response()])
         )
@@ -204,8 +207,302 @@ class TestAggressiveModeSkipsChecks:
             resume_plan=self._rewrite_plan("AGGRESSIVE"),
         )
         assert "Kubernetes" in result.experiences[1].technologies
+        assert "75%" in result.experiences[1].highlights[0]
 
-    def test_strict_rejects_the_same_response(self):
+    def test_aggressive_refuses_a_technology_in_neither_resume_nor_job(self):
+        # "Jest" reached a real generated resume this way: named nowhere in the
+        # source and nowhere in the job. That is invention, not tailoring.
+        source = make_resume()
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    experiences_response(
+                        experience_entry(
+                            "exp_002",
+                            technologies=["Jest"],
+                            highlights=["Shipped a payments service."],
+                        )
+                    )
+                ]
+            )
+        )
+        result = generator.generate(
+            source_resume=source,
+            job_analysis=make_job_analysis(),
+            resume_plan=self._rewrite_plan("AGGRESSIVE"),
+        )
+        assert "Jest" not in result.experiences[1].technologies
+        assert result.experiences[1].technologies == source.experiences[1].technologies
+
+    def test_strict_filters_an_unsupported_technology(self):
+        # Terms are filtered rather than raised on. enforce_strict would kill a
+        # 65-second generation over one vague label the model lifted from the
+        # job description; strict mode explicitly permits reordering and
+        # subsetting what the resume already says, so that is what happens.
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    experiences_response(
+                        experience_entry(
+                            "exp_002",
+                            technologies=["Python", "Kubernetes"],
+                            highlights=["Shipped a payments service."],
+                        )
+                    )
+                ]
+            )
+        )
+        source = make_resume()
+        result = generator.generate(
+            source_resume=source,
+            job_analysis=make_job_analysis(),
+            resume_plan=self._rewrite_plan("STRICT"),
+        )
+        # Kubernetes is refused, so the resume's own technologies are retained
+        # alongside what survived rather than the field being thinned.
+        assert result.experiences[1].technologies == ["Python", "Go"]
+
+    def test_strict_falls_back_when_filtering_would_empty(self):
+        # The validator rejects an experience with no technologies, so an
+        # entirely unsupported list falls back to the source's own.
+        source = make_resume()
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    experiences_response(
+                        experience_entry(
+                            "exp_002",
+                            technologies=["Kubernetes", "Helm"],
+                            highlights=["Shipped a payments service."],
+                        )
+                    )
+                ]
+            )
+        )
+        result = generator.generate(
+            source_resume=source,
+            job_analysis=make_job_analysis(),
+            resume_plan=self._rewrite_plan("STRICT"),
+        )
+        assert result.experiences[1].technologies == source.experiences[1].technologies
+
+    def test_strict_preserves_the_models_ordering(self):
+        # Re-emphasising by reordering is exactly what strict mode allows.
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    experiences_response(
+                        experience_entry(
+                            "exp_002",
+                            technologies=["Go", "Python"],
+                            highlights=["Shipped a payments service."],
+                        )
+                    )
+                ]
+            )
+        )
+        result = generator.generate(
+            source_resume=make_resume(),
+            job_analysis=make_job_analysis(),
+            resume_plan=self._rewrite_plan("STRICT"),
+        )
+        assert result.experiences[1].technologies == ["Go", "Python"]
+
+    def _domains_after(self, mode, domains):
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    experiences_response(
+                        experience_entry(
+                            "exp_002",
+                            domains=domains,
+                            highlights=["Shipped a payments service."],
+                        )
+                    )
+                ]
+            )
+        )
+        result = generator.generate(
+            source_resume=make_resume(),
+            job_analysis=make_job_analysis(),
+            resume_plan=self._rewrite_plan(mode),
+        )
+        return result.experiences[1].domains
+
+    def test_process_language_never_replaces_a_real_domain(self):
+        # The source has Backend and Cloud. A job written entirely in process
+        # language offers no competitor for the slot, so the resume keeps what
+        # it had rather than trading it for phrases that say nothing.
+        source = make_resume()
+        after = self._domains_after(
+            "AGGRESSIVE",
+            ["Application Software Development", "Code Quality", "Defect Handling"],
+        )
+        assert after == source.experiences[1].domains
+
+    def test_a_genuinely_specific_domain_does_replace(self):
+        # When a job names a real domain, the swap is the whole point of
+        # tailoring and goes ahead.
+        after = self._domains_after("AGGRESSIVE", ["Payments", "Backend"])
+        assert after == ["Payments", "Backend"]
+
+    def test_a_partial_refusal_retains_the_source_terms(self):
+        # One refusal means the model's judgement was declined for that term,
+        # so the resume's own domains come back alongside the survivors.
+        # Without this, six empty phrases and one thin real one would leave the
+        # field holding only the thin one — worse than either the original or
+        # a clean swap.
+        source = make_resume()
+        after = self._domains_after("AGGRESSIVE", ["Payments", "Code Quality"])
+        assert after[:1] == ["Payments"]
+        assert after[1:] == source.experiences[1].domains
+
+    def test_an_unrefused_response_replaces_outright(self):
+        # Nothing refused means the model is trusted completely, which is what
+        # keeps genuine retargeting possible. Both terms are in the source
+        # prose, so both pass.
+        after = self._domains_after("AGGRESSIVE", ["Payments", "Backend"])
+        assert after == ["Payments", "Backend"]
+
+    def test_a_source_domain_is_kept_even_if_generic(self):
+        # The candidate's own wording is theirs. The filter judges proposed
+        # replacements, never what the resume already says.
+        source = make_resume()
+        source.experiences[1].domains = ["System Maintenance"]
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    experiences_response(
+                        experience_entry(
+                            "exp_002",
+                            domains=["System Maintenance"],
+                            highlights=["Shipped a payments service."],
+                        )
+                    )
+                ]
+            )
+        )
+        result = generator.generate(
+            source_resume=source,
+            job_analysis=make_job_analysis(),
+            resume_plan=self._rewrite_plan("AGGRESSIVE"),
+        )
+        assert result.experiences[1].domains == ["System Maintenance"]
+
+    def test_generic_technologies_are_also_refused(self):
+        source = make_resume()
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    experiences_response(
+                        experience_entry(
+                            "exp_002",
+                            technologies=["App Services", "Software Systems"],
+                            highlights=["Shipped a payments service."],
+                        )
+                    )
+                ]
+            )
+        )
+        result = generator.generate(
+            source_resume=source,
+            job_analysis=make_job_analysis(),
+            resume_plan=self._rewrite_plan("AGGRESSIVE"),
+        )
+        assert (
+            result.experiences[1].technologies
+            == source.experiences[1].technologies
+        )
+
+    def test_a_generated_project_also_refuses_weak_terms(self):
+        # A generated project has no source terms to fall back on, so weak
+        # ones are simply dropped rather than substituted.
+        plan = make_plan(
+            mode="AGGRESSIVE",
+            project_plans=[
+                {
+                    "project_id": "proj_001",
+                    "action": "KEEP",
+                    "priority": "MEDIUM",
+                    "rewrite_strategy": None,
+                    "generation_brief": None,
+                    "keywords_to_include": [],
+                    "themes_to_emphasize": [],
+                    "reasoning": "Still relevant.",
+                },
+                {
+                    "project_id": "proj_002",
+                    "action": "KEEP",
+                    "priority": "MEDIUM",
+                    "rewrite_strategy": None,
+                    "generation_brief": None,
+                    "keywords_to_include": [],
+                    "themes_to_emphasize": [],
+                    "reasoning": "Still relevant.",
+                },
+                {
+                    "project_id": None,
+                    "action": "GENERATE",
+                    "priority": "HIGH",
+                    "rewrite_strategy": None,
+                    "generation_brief": "A cloud platform demo.",
+                    "keywords_to_include": [],
+                    "themes_to_emphasize": [],
+                    "reasoning": "The job mentions OCI.",
+                },
+            ],
+        )
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    projects_response(
+                        {
+                            "project_id": None,
+                            "name": "Cloud Platform",
+                            "type": "Personal",
+                            "technologies": ["Kubernetes", "App Services", "Python"],
+                            "domains": ["Code Quality"],
+                            "highlights": ["Built a cloud platform."],
+                        }
+                    )
+                ]
+            )
+        )
+        result = generator.generate(
+            source_resume=make_resume(),
+            job_analysis=make_job_analysis(),
+            resume_plan=plan,
+        )
+        # Positions follow priority order now, so select by source.
+        generated = next(
+            p for p in result.projects if p.source.value == "GENERATED"
+        )
+        assert generated.technologies == ["Kubernetes", "Python"]
+        assert generated.domains == []
+
+    def test_aggressive_keeps_source_and_job_terms_together(self):
+        generator = ResumeGenerator(
+            SequencedProvider(
+                [
+                    experiences_response(
+                        experience_entry(
+                            "exp_002",
+                            technologies=["Python", "Kubernetes"],
+                            highlights=["Shipped a payments service."],
+                        )
+                    )
+                ]
+            )
+        )
+        result = generator.generate(
+            source_resume=make_resume(),
+            job_analysis=make_job_analysis(),
+            resume_plan=self._rewrite_plan("AGGRESSIVE"),
+        )
+        # Python from the resume, Kubernetes from the job.
+        assert result.experiences[1].technologies == ["Python", "Kubernetes"]
+
+    def test_strict_still_raises_on_a_fabricated_metric(self):
         generator = ResumeGenerator(
             SequencedProvider([self._fabricating_response()])
         )

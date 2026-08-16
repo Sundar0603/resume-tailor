@@ -25,6 +25,7 @@ from src.analyzer.canonical import canonical_text
 from src.analyzer.provider import LLMProvider
 from src.analyzer.sampling import deterministic_options
 from src.parser.models import Resume
+from src.vocabulary import is_weak_term
 
 from .canonical import canonicalize
 from .exceptions import (
@@ -278,6 +279,39 @@ class ResumePlanner:
                 raise DuplicatePlanEntry(f"Duplicate {label}: {entity_id!r}")
             seen.add(entity_id)
 
+    def _drop_activity_phrases(self, sp) -> None:
+        """
+        Drop skills_to_add entries that name an activity rather than a skill.
+
+        Rule 27, in both modes. The planner prompt already forbids this and
+        gives the exact offending strings as examples; qwen3.6 emits them
+        anyway, and the Resume Generator applies skill plans verbatim, so
+        "Interoperability Strategies" lands on the resume as a skill.
+
+        A soft failure, reported via ``last_discarded``, matching rules 21 and
+        26. Never empties a GENERATE entry: a category whose every proposed
+        skill looks like an activity is left intact, because dropping them all
+        would breach rule 24 and report a confusing schema error instead of
+        this one.
+        """
+        if not sp.skills_to_add:
+            return
+
+        kept = [s for s in sp.skills_to_add if not is_weak_term(s)]
+        if not kept and sp.action == PlanAction.GENERATE:
+            return
+        if len(kept) == len(sp.skills_to_add):
+            return
+
+        for skill in sp.skills_to_add:
+            if is_weak_term(skill):
+                self.last_discarded.append(
+                    f"{sp.category_id or sp.new_category_name}: skill {skill!r} "
+                    "names an activity, not a technology (skills_to_add entry "
+                    "dropped)"
+                )
+        sp.skills_to_add = kept
+
     def _reconcile_skill_lists(
         self, sp, resume: Resume, mode: PlanningMode = PlanningMode.AGGRESSIVE
     ) -> None:
@@ -324,6 +358,8 @@ class ResumePlanner:
                         "STRICT mode)"
                     )
             sp.skills_to_add = allowed
+
+        self._drop_activity_phrases(sp)
 
         if sp.category_id is None:
             return

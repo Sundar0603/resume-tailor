@@ -70,6 +70,48 @@ def source_vocabulary(resume: Resume) -> Set[str]:
     return vocabulary
 
 
+def contains_metric(text: str) -> bool:
+    """
+    Return True when a line carries a number — "70%", "20+", "10000".
+
+    A quantified outcome is the most persuasive thing a resume bullet can
+    carry, which makes it the worst thing to lose when the page is trimmed.
+    """
+    return bool(isinstance(text, str) and _NUMBER_PATTERN.search(text))
+
+
+def job_vocabulary(job_analysis) -> Set[str]:
+    """
+    Return every term the target job names, case-insensitively.
+
+    Built from the *structured* term lists only — technologies, skills,
+    keywords, domains. ``responsibilities`` and ``qualifications`` are prose
+    and are deliberately excluded: folding whole sentences in would admit
+    nearly any word and defeat the purpose of having a vocabulary at all.
+
+    Aggressive mode allows a term the resume does not support, but only when
+    the job actually asked for it. That is the difference between tailoring
+    and invention: "OCI" appears in the job description, "Jest" appears in
+    neither the resume nor the job.
+    """
+    vocabulary: Set[str] = set()
+
+    for group in (
+        getattr(job_analysis, "technologies", []),
+        getattr(job_analysis, "required_skills", []),
+        getattr(job_analysis, "preferred_skills", []),
+        getattr(job_analysis, "nice_to_have", []),
+        getattr(job_analysis, "keywords", []),
+        getattr(job_analysis, "domains", []),
+    ):
+        for term in group or []:
+            vocabulary.add(_normalise(term))
+            vocabulary.update(_words([term]))
+
+    vocabulary.discard("")
+    return vocabulary
+
+
 def source_numbers(resume: Resume) -> Set[str]:
     """Return every numeric token appearing anywhere in the source resume."""
     numbers: Set[str] = set()

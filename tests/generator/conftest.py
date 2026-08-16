@@ -191,7 +191,10 @@ def make_job_analysis() -> JobAnalysis:
         seniority="Mid",
         required_skills=["Python", "AWS"],
         preferred_skills=["Go"],
-        technologies=["Docker", "AWS"],
+        # Kubernetes is deliberately in the job and *not* in make_resume(): it
+        # is the term that separates "the job asked for this" from "the model
+        # invented it". Aggressive mode admits it, strict mode refuses it.
+        technologies=["Docker", "AWS", "Kubernetes"],
         domains=["Backend"],
         responsibilities=["Design and operate backend services."],
         qualifications=["3+ years of experience"],

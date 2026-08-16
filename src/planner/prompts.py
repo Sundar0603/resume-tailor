@@ -108,6 +108,28 @@ leave new_category_name null.
 - Never list the same skill in both skills_to_add and skills_to_remove of the same \
 skill category.
 
+Skill naming rules:
+- A skill is a thing a recruiter or an applicant tracking system can filter on: a \
+language, framework, library, tool, database, platform, protocol, or a named, \
+established technique. It is a noun, normally one or two words, never more than three.
+- Write each skill the way its makers write it: "PostgreSQL", not "postgres"; \
+"Kubernetes", not "k8s"; "React", not "react".
+- A responsibility is not a skill. The job description describes what the role does; \
+those descriptions belong in reasoning and in themes_to_emphasize, never in \
+skills_to_add.
+- Do not turn a phrase from the job description into a skill by capitalising it. \
+These are all wrong: "Interoperability Strategies", "Optimization of Coding", \
+"Application Software Development Lifecycle", "Broad Acceptance Criteria", \
+"Debugging and Troubleshooting", "API Functionality", "System Maintenance", \
+"Quality Assurance Processes". Each names an activity, not a technology.
+- These are right: "Spring Boot", "gRPC", "Redis", "Terraform", "GraphQL", \
+"Kafka", "OAuth 2.0".
+- If the job description asks for something that is genuinely a skill but has no \
+one-word name, prefer the concrete technology that delivers it. A job asking for \
+"container orchestration experience" wants "Kubernetes" or "Docker Swarm".
+- The same rules apply to a category name, which groups skills and is normally two \
+to four words: "Cloud & Infrastructure", "Databases", "Testing & CI/CD".
+
 Required JSON schema:
 {{
     "summary_plan": {{

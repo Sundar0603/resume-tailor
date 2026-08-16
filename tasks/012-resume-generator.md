@@ -236,8 +236,16 @@ def enforce_strict(source: Resume, generated: Resume) -> None
 
 - Vocabulary = case-insensitive set of all `technologies`, `domains`,
   `all_skills()`, and the tokens of every highlight and the summary.
-- Every technology, domain and skill in the generated resume must be in it —
-  otherwise `GenerationConstraintError` naming the offending term.
+- Generated `technologies` and `domains` are **filtered** to this vocabulary in
+  `generator.py` before the check runs, preserving the model's ordering, with a
+  fallback to the source list when filtering would empty them. Strict mode
+  explicitly permits reordering and subsetting existing information, so this is
+  the intended behaviour — and it makes the invalid state unreachable rather
+  than merely detected. Raising here instead discards a 65-second generation
+  over one vague label lifted from the JD.
+- Any term that still survives is a genuine violation →
+  `GenerationConstraintError` naming it. This is the backstop, and after
+  filtering it should never fire on terms.
 - Every numeric token (`\d[\d,]*(?:\.\d+)?%?`) in a generated highlight or the
   summary must appear in the source text — otherwise
   `GenerationConstraintError`.
@@ -315,6 +323,10 @@ Explicit `__all__`, ordered like `src/planner/__init__.py`.
 | 8 | STRICT: technology/domain/skill absent from source vocabulary | `GenerationConstraintError` |
 | 9 | STRICT: numeric token absent from source text | `GenerationConstraintError` |
 | 10 | Fewer than two projects survive `REMOVE` | `GenerationConstraintError` |
+| 10b | No skill categories survive | `GenerationConstraintError` |
+| 10c | One skill category is left with no skills | **none** — dropped, reported in `last_discarded` |
+| 10d | A REMOVE is not funded by a successful GENERATE | **none** — cancelled, reported in `last_discarded` |
+| 10e | A REWRITE removes more skills than it adds | **none** — removals cancelled; named additions split into a new category |
 | 11 | Generated resume fails `ResumeValidator` | `GeneratorResponseValidationError` |
 
 Rules 8 and 9 are skipped entirely in AGGRESSIVE. STRICT never sees a
@@ -382,11 +394,21 @@ Live checks, both modes, against a real JD:
 
 | Mode | Time | Result |
 |---|---|---|
-| STRICT | 66.1 s | PASS — no fabricated terms or metrics |
-| AGGRESSIVE | 69.2 s | PASS — 1 generated project, 1 generated skill category |
+| STRICT | 65.1 s | PASS — no fabricated terms or metrics, no warnings |
+| AGGRESSIVE | 68.9 s | PASS — 1 generated project, 1 generated skill category |
 
-The first strict run failed, on the gap that became rule 26. That is the whole
-argument for this script existing: 461 offline tests were green at the time.
+Four separate defects surfaced only in live runs, none caught by the offline
+suite, which was green throughout:
+
+1. The planner adding unsupported skills through `skills_to_add` in strict mode
+   → planner rule 26.
+2. The planner filling skill categories with JD prose ("Interoperability
+   Strategies", "Defect Handling") → planner rule 27, prompt and Python.
+3. The generator putting a JD phrase into an experience's `domains`, killing a
+   65-second strict generation → term filtering in `generator.py`.
+4. A `REWRITE` leaving a skill category with no skills → dropped and reported.
+
+That is the argument for this script existing.
 
 ---
 
