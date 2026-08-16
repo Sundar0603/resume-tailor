@@ -3,8 +3,8 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 012 (Resume Generator). Baseline: **636 tests
-passing** (339 before task 012). Update this file at the end of each task; do
+Status as of the end of task 013 (Markdown Serializer). Baseline: **736 tests
+passing** (636 after task 012). Update this file at the end of each task; do
 not rewrite it.
 
 ---
@@ -18,6 +18,7 @@ Markdown Resume
   → JD Analyzer          ✅ 006, 010
   → Resume Planner       ✅ 011
   → Resume Generator     ✅ 012
+  → Markdown Serializer  ✅ 013
   → LaTeX Renderer       ⬜
   → pdflatex Compiler    ⬜
   → Quality Gate         ⬜
@@ -663,6 +664,79 @@ added.
 
 ---
 
+## 10c. Markdown Serializer (task 013)
+
+`src/renderer/` — `exceptions.py`, `markdown_serializer.py`, `__init__.py`.
+The renderer package is where LaTeX and PDF rendering will also land.
+
+```python
+MarkdownSerializer().serialize(resume) -> str      # complete document, one trailing newline
+ResumeParser().parse_string(raw) -> Resume         # new; parse() now delegates to it
+```
+
+No LLM call, no file I/O, no mutation. `parse` was reduced to
+`return self.parse_string(self._read_file(file_path))` — a pure extraction,
+since everything after the read already operated on the raw string.
+
+**Only schema fields are emitted.** `id` and `source` are runtime-only and
+never written. This is the deliberate asymmetry of the stage: the Markdown is
+the canonical *content*, the Resume model is the canonical *runtime state*, and
+the two are not the same set of fields.
+
+**Round-trip guarantees, and the one place they stop.** Parse → serialize →
+parse is byte-stable and strictly `==` for anything the Parser produced,
+including all three `content/*.md`. It is only *semantically* equal for
+Generator output, and the gap is not fixable:
+
+- `source=GENERATED` has no Markdown representation, so it re-parses as
+  `CANONICAL`.
+- `mint_id` uses `highest + 1`, so a generated resume can hold `[proj_002,
+  proj_005]`; `assign_sequential_ids` renumbers those to `[proj_001, proj_002]`
+  on re-parse.
+
+So **a serialized generated resume is not a substitute for the object** — do
+not write it to disk and re-read it as a way of passing a resume between
+stages, or the Quality Gate and Revision Engine lose the lineage they use to
+decide what may be touched. Tests compare with `id`/`source` excluded
+(`tests/renderer/conftest.py::semantically_equal`).
+
+**Three parser behaviours the serializer exists to route around.** All were
+verified against `src/helpers/_section_utils.py`, and all fail *silently*:
+
+- A bare `Key:` where a scalar is expected swallows the next field's whole
+  line — `get_scalar`'s `\s*` spans the newline. This, not tidiness, is why an
+  absent optional field must be omitted rather than written as
+  `Repository: None` or `Repository:`.
+- An empty string in a bullet list (`- ` strips to `-`) fails the bullet test
+  and hits `get_list`'s `break`, **discarding every later bullet in that list**.
+- A line that is exactly `---` does the same, and `SummaryParser` deletes it
+  outright.
+
+Each raises `SerializationError` naming the entity id and field. `---`
+separators *are* emitted between sections and between sibling entity blocks,
+matching `content/*.md` — safe only because they land after the last bullet of
+a block, never inside a run.
+
+**Front-matter values are quoted only when they need it.** The metadata parser
+does `yaml.safe_load` then `str()`, which retypes bare scalars: `version: 1.10`
+→ `1.1`, `template: no` → `"False"`. `_yaml_value` emits bare when
+`str(safe_load(...))` reproduces the string and `json.dumps` otherwise, so
+ordinary output stays byte-identical to the schema's own examples.
+
+**Field order follows the task doc and `RESUME_SCHEMA.md`, not `content/*.md`.**
+The canonical files write `Location` before `Duration` in Experience, and put
+`Duration` last in Education. The parser is order-agnostic, so both parse
+identically — but serialized output will diff against its own source file on
+exactly those lines and nothing else. Verified: the only diff against
+`content/cybersecurity_resume.md` is those two field moves.
+
+Live check: `tests/renderer/verify_round_trip.py` drives parse → analyze →
+plan → generate → serialize → parse against the real provider, since the
+offline suite covers the serializer's logic but cannot produce a realistic
+*input*.
+
+---
+
 ## 11. Known open items
 
 - **`src/cli/_common.py` is not extracted.** `analyze.py` and `plan.py` already
@@ -707,4 +781,15 @@ added.
 - **`resume-tailor generate` does not exist.** The CLI was out of scope for
   task 012; `tests/generator/verify_generation.py` is the only way to drive the
   generator live. That command should also trigger the `src/cli/_common.py`
-  extraction.
+  extraction. The serializer is what it will write its output with.
+- **Nothing writes `generated.md` yet.** Task 013 built the serializer but no
+  caller. The Resume object still never leaves memory.
+- **`""` and `None` are indistinguishable through Markdown.** An optional
+  scalar holding `""` is omitted and re-parses as `None`. Emitting
+  `Location: ` with a trailing space would preserve it, at the cost of trailing
+  whitespace and a value the parser strips to `""` anyway. Accepted: an empty
+  optional field and an absent one mean the same thing on a resume.
+- **Leading/trailing whitespace inside a field value does not survive.** The
+  parser strips it. The serializer emits values verbatim and does not raise,
+  because the loss is cosmetic — unlike the three silent-truncation cases,
+  which do raise.

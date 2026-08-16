@@ -66,7 +66,31 @@ class ResumeParser:
         FileNotFoundError
             If the file does not exist.
         """
-        raw = self._read_file(file_path)
+        return self.parse_string(self._read_file(file_path))
+
+    def parse_string(self, raw: str) -> Resume:
+        """
+        Parse a Markdown resume document held in memory.
+
+        Identical to :meth:`parse` except that the document text is supplied
+        directly instead of read from disk, so serialized output can be
+        round-tripped without touching the filesystem.
+
+        Parameters
+        ----------
+        raw : str
+            The full raw Markdown document, including front matter.
+
+        Returns
+        -------
+        Resume
+            Fully populated Resume object.
+
+        Raises
+        ------
+        ParserError
+            If the document violates the schema.
+        """
         body = self._strip_front_matter(raw)
         sections = split_top_level_sections(body)
 
