@@ -3,10 +3,10 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 014 (LaTeX Renderer). Baseline: **825 tests
-passing** (736 after task 013); 8 of those are pdflatex compilation tests that
-skip when no TeX distribution is on PATH. Update this file at the end of each
-task; do not rewrite it.
+Status as of the end of task 015 (PDF Compiler). Baseline: **902 tests
+passing** (825 after task 014); 19 of those need a TeX distribution and skip
+when none is on PATH. Update this file at the end of each task; do not rewrite
+it.
 
 ---
 
@@ -21,7 +21,7 @@ Markdown Resume
   → Resume Generator     ✅ 012
   → Markdown Serializer  ✅ 013
   → LaTeX Renderer       ✅ 014
-  → pdflatex Compiler    ⬜
+  → pdflatex Compiler    ✅ 015
   → Quality Gate         ⬜
   → Revision Engine      ⬜
   → Reporter             ⬜
@@ -38,7 +38,8 @@ Projects 2, Skills 3, Experience 4. Education never revised.
 **Separation of concerns that must not blur:** the Analyzer extracts, the
 Planner decides *what changes and why*, the Generator writes *the words*, the
 Renderer produces LaTeX from a frozen template (AI never touches LaTeX), the
-Quality Gate judges the compiled PDF.
+Compiler only answers "did the engine produce a readable PDF", the Quality Gate
+judges the compiled PDF.
 
 ---
 
@@ -492,15 +493,16 @@ re-running the experiment that produced them.
   projection.
 - **`uv` is not on PATH** in this environment. Run tests with
   `.venv/bin/python -m pytest`.
-- **`docs/ARCHITECTURE.md` says Python 3.12+**, `pyproject.toml` says `>=3.9`,
-  and the venv is 3.9. The venv wins.
-- **`docs/ARCHITECTURE.md` references a `ROADMAP.md` that does not exist**, and
-  it is marked *Frozen* with a rule that implementation diverging from it is
+- **Python is 3.9.** `pyproject.toml` says `>=3.9` and the venv is 3.9.
+  (ARCHITECTURE used to claim 3.12+; corrected in its v1.1 amendment.)
+- **`docs/ARCHITECTURE.md` is *Frozen***: implementation diverging from it is
   "considered incorrect unless the architecture has been explicitly updated
-  first". Both ARCHITECTURE and `docs/COMPONENT_SPECIFICATIONS.md` still
-  describe the Generator as `Resume + JDAnalysis + Mode → Resume`, with no
-  Planner stage and no `ResumePlan` — a divergence that must be corrected in the
-  docs as part of task 012.
+  first". So when the code is right and the doc is wrong, **amend the doc and
+  log it** — v1.1 added an Amendment Log for exactly this. `ROADMAP.md` still
+  does not exist and is now marked as such.
+  `docs/COMPONENT_SPECIFICATIONS.md` has *not* had the same pass and may still
+  describe the Generator as `Resume + JDAnalysis + Mode → Resume` with no
+  Planner stage.
 - **`docs/IMPLEMENTATION_GUIDE.md` is a stub** — eight bare headings.
 - **Not installed:** Rich, PyMuPDF, PyYAML.
 
@@ -900,6 +902,140 @@ Baseline after this task: **825 tests passing** (736 after task 013).
 
 ---
 
+## 10e. PDF Compiler (task 015)
+
+`src/compiler/` — `exceptions.py`, `models.py`, `pdf_compiler.py`, `__init__.py`.
+A package of its own, **not** part of `src/renderer/`. The renderer's docstring
+used to promise "PDF compilation will join them here"; it does not, and that
+sentence has been corrected. Rendering produces source, compiling drives a
+toolchain, and `docs/ARCHITECTURE.md` lists them as separate modules.
+
+```python
+PDFCompiler(engine="pdflatex", timeout_seconds=120).compile(
+    latex_source, output_directory="output/compile/attempt_1", job_name="resume"
+) -> CompilationResult
+resolve_engine("pdflatex") -> str      # public; doctor uses it too
+```
+
+No LLM call, no config, no mutation. The first module in `src/` to import
+`subprocess`, `tempfile` or `shutil`.
+
+**It raises; it does not report.** `CompilationResult` has no `success` field
+because the flag would be `True` on every object that can exist. This is the
+one place the house "docstring-only exception bodies" rule is broken:
+`CompilationFailedError` carries `exit_code`, `log_path` and `tex_path` as
+attributes, because when nothing is returned the diagnostics have nowhere else
+to travel and the Revision Engine needs the log path.
+
+```
+CompilerError
+├─ InvalidCompilationRequest        # empty job name, or one containing a separator
+├─ LatexEngineNotFoundError         # no process ever ran
+└─ CompilationFailedError           # the engine ran and did not deliver
+   ├─ PDFNotGeneratedError
+   └─ CompilationTimeoutError
+```
+
+Catching `CompilationFailedError` catches all three post-launch failures.
+
+**One temporary directory per call, and that single choice does four jobs.**
+Isolation, safe concurrency, "no state from the previous attempt survives", and
+no `.aux`/`.out` pollution all fall out of it — by construction, not by cleanup.
+Artifacts are copied into the caller-owned `output_directory` afterwards. The
+caller owns attempt numbering; the compiler only owns `job_name`.
+
+**Artifacts are preserved *before* the exception is raised.** This ordering is
+the whole reason a failed attempt is debuggable — the workspace is about to be
+deleted, and the log is the only evidence. True on every failure path, timeout
+included. `log_path` always names a file that exists: TeX's own `.log` when it
+wrote one, otherwise the captured stdout written to the same path.
+
+**Determinism needed an actual fix, not just a promise.** pdflatex stamps the
+wall clock into `/CreationDate` and derives the document `/ID` from it, so
+identical source produced byte-different PDFs. `SOURCE_DATE_EPOCH=0` and
+`FORCE_SOURCE_DATE=1` are pinned in the engine's environment.
+A/B'd before committing to it: **without the pinning two compiles of the same
+source differ; with it they are byte-identical.** Pinned by
+`TestRealDeterminism`.
+
+**Success is exit 0 *and* a readable PDF — both, because either alone lies.**
+Under `nonstopmode` the engine routinely writes a *partial* PDF and exits
+non-zero, so PDF-existence alone passes broken documents; and exit 0 does not
+prove a file appeared. "Readable" is `is_file()` + non-zero size + the `%PDF-`
+magic bytes. No PDF library is involved — PyMuPDF is not installed, and page
+counting is the Quality Gate's job.
+
+Note the existing renderer test helper trusted PDF existence and **ignored the
+exit code entirely**. Tightening this surfaced no hidden defect: all 8 of its
+tests still pass.
+
+**Four flags, every invocation** (`ENGINE_FLAGS`): `-interaction=nonstopmode`
+(never block on input), `-halt-on-error` (the log ends at the cause),
+`-file-line-error` (`file:line:` — parseable by the Quality Gate),
+`-no-shell-escape` (disables `\write18`). The first two match what the renderer
+tests already used; the last two are new.
+
+**Timeout, because the budget is real.** A hung compile would eat the whole
+180 s run. `DEFAULT_TIMEOUT_SECONDS = 120`; the process is killed and its
+artifacts kept. Measured cost is nowhere near it — **~0.5 s per resume**.
+
+**Single pass, deliberately.** These templates use no `\ref`, no
+`\tableofcontents` and no hyperref bookmarks, so a second run cannot change the
+output. Acting on a "Rerun to get … right" request would be a quality decision.
+
+**The test seam is a `runner` callable, not a mock.** The compiler takes
+`runner(argv, cwd, timeout, env) -> (exit_code, output)`, defaulting to the real
+subprocess call. `tests/compiler/conftest.py` supplies `FakeRunner`,
+`TimeoutRunner` and `WorkspaceProbe`, which write real artifacts into the real
+workspace so the compiler's own checks run against real files. Same idea as
+`FakeProvider` subclassing `LLMProvider`. The task doc asked for the subprocess
+to be mocked; this reaches every branch without a mocking library, and the 49
+unit tests need no TeX distribution at all. Engine resolution is exercised with
+a genuinely absent name and with `sys.executable`, so even that needs no fake.
+
+`test_compilation_integration.py` (11 tests) drives real pdflatex and skips on
+`shutil.which`, matching `test_latex_compilation.py:30-32` — there are no pytest
+markers registered in `pyproject.toml`, so `skipif` *is* this project's
+"integration test" marker.
+
+**Both earlier copies of the subprocess logic are now consumers.**
+`tests/renderer/test_latex_compilation.py` and
+`tests/renderer/verify_latex_render.py` both call `PDFCompiler`. Their logs now
+come from TeX's transcript rather than captured stdout — verified to be a
+superset: compiling a canonical resume gives 658 log lines against 46 of stdout,
+and the only stdout-exclusive lines are the banner and path-list line wrapping,
+no diagnostics. It also carries `Output written on …`, which `PAGE_COUNT` needs.
+
+**`resume-tailor doctor` now reports the toolchain** (an addition beyond the
+task's DoD). It prints the resolved engine path, or a `✗` with a TinyTeX
+remediation. **Diagnostic only — it never changes the exit code**, because a
+missing TeX distribution still leaves analysis, planning and generation working.
+The summary line is now conditional: "All checks passed." only when the engine
+is present, otherwise "Provider checks passed. The LaTeX toolchain needs
+attention." Only the path is reported; running the engine to read its version
+would put a subprocess call in the CLI layer, which that module does not do.
+This is why `resolve_engine` is public rather than a private method.
+
+This environment is exactly the case that motivated it: **pdflatex is not on
+PATH in a non-login shell.** TinyTeX lives at
+`~/Library/TinyTeX/bin/universal-darwin` and is added in `~/.zshrc` /
+`~/.bash_profile`, so tooling that shells out with plain `bash` silently skips
+every compilation test. Run the suite with that directory prepended to `PATH`,
+or the 19 TeX tests do not actually run.
+
+**An engine that resolves but cannot run** — the exec bit set on something that
+is not a binary — used to leak a bare `OSError` ([Errno 8] Exec format error).
+Now `LatexEngineNotFoundError`. Found by probing whether pdflatex ever writes to
+stderr (it does not, in any of valid / broken / missing-package runs, and it
+always writes a `.log` — so discarding captured stdout on success loses
+nothing).
+
+Baseline after this task: **902 tests passing** (825 after task 014), 883 + 19
+skipped without a TeX distribution.
+
+
+---
+
 ## 11. Known open items
 
 - **`src/cli/_common.py` is not extracted.** `analyze.py` and `plan.py` already
@@ -929,6 +1065,33 @@ Baseline after this task: **825 tests passing** (736 after task 013).
   not have. Strict mode is unaffected: `enforce_strict` checks every number in
   prose, and its term check covers the fields.
 
+- **`output/compile/` is a third artifact root**, joining `output/tex/` and
+  `output/resumes/latex/`. All are under the gitignored `output/`. The
+  compiler's `DEFAULT_ARTIFACT_DIRECTORY` is only a default — the caller passes
+  whatever attempt directory it wants, and the Revision Engine will.
+
+- **FIXED: `docs/ARCHITECTURE.md` is now amended to v1.1** and carries an
+  **Amendment Log** recording every correction and its reason. It is still
+  marked *Frozen*; the log is what makes an edit to a frozen document
+  auditable. Corrected in this pass: artifacts moved from flat
+  `artifacts/attempt_1.pdf` to nested `output/compile/<attempt>/`; Python 3.12+
+  → 3.9; PyYAML → TOML + keyring; Rich and PyMuPDF marked not adopted;
+  `generated/`, `artifacts/`, `logs/` and top-level `prompts/` removed as never
+  created; `src/models/` and `src/utils/` removed in favour of what exists;
+  `src/compiler/`, `src/validation/`, `src/config/`, `src/helpers/` added; the
+  Compiler section expanded to its real contract; `ROADMAP.md` marked not
+  written and `IMPLEMENTATION_GUIDE.md` marked a stub.
+
+  Two `docs/` gotchas listed in §10 are therefore resolved. **Still open:**
+  `docs/COMPONENT_SPECIFICATIONS.md` has not been re-checked against the code,
+  and `docs/IMPLEMENTATION_GUIDE.md` remains a stub.
+
+- **The compiler cannot tell a good PDF from a bad one, by design.** It answers
+  only "did the engine produce a readable PDF". Every one of the §10d failure
+  modes — overlapping bullets, two pages, overfull boxes, dropped glyphs —
+  compiles with exit 0 and passes every check the compiler makes. The log it
+  preserves is what the Quality Gate reads to find them.
+
 - **Weak-term filtering is conservative on purpose.** `src/vocabulary.py`
   spares words that could anchor a real domain or skill, so vague entries
   still get through ("Performance Profiling", "Cloud Architecture"). Widening
@@ -941,19 +1104,34 @@ Baseline after this task: **825 tests passing** (736 after task 013).
   leaving roughly 110 s for LaTeX, compilation, the quality gate and up to
   three revisions. Tighter than it looks. The generator's three calls are
   independent of each other and could be issued concurrently if needed.
+  Compilation itself turns out to be cheap — **~0.5 s per resume**, so four
+  attempts cost about 2 s of that 110 s. The budget pressure is all in the LLM
+  calls.
 - **`resume-tailor generate` does not exist.** The CLI was out of scope for
   task 012; `tests/generator/verify_generation.py` is the only way to drive the
   generator live. That command should also trigger the `src/cli/_common.py`
   extraction. The serializer is what it will write its output with.
 - **Nothing writes `generated.md` yet.** Task 013 built the serializer but no
-  caller. `LatexRenderer.render_to_file` (task 014) is the only writer so far,
-  and only `verify_latex_render.py` calls it — there is still no CLI path from
-  a job description to a file on disk.
-- **Almost everything overflows one page, in both modes.** Five tailored
-  resumes generated live and compiled (`output/tex/`): four run to **two
-  pages**, only `fullstack_strict` fits one. Strict mode overflows too, so this
-  is not an aggressive-mode problem — the *source* resumes already need
-  hand-tuning to fit, and the generator only grows them.
+  caller. `LatexRenderer.render_to_file` (task 014) and `PDFCompiler.compile`
+  (task 015) are the only writers so far, and only the verify scripts call them
+  — there is still no CLI path from a job description to a file on disk.
+  `resume-tailor doctor` gained a LaTeX *check* in task 015 but no command
+  produces a PDF.
+- **Everything overflows one page, in both modes.** Re-measured in task 015
+  through `PDFCompiler` over all six tailored `.tex` in `output/tex/`, plus the
+  three canonical resumes: **all nine run to two pages**, with zero
+  overfull/underfull boxes and zero missing glyphs.
+
+  This is a correction. §11 previously recorded "four run to two pages, only
+  `fullstack_strict` fits one". `fullstack_strict` now measures **2 pages**
+  (`Output written on fullstack_strict.pdf (2 pages, 61731 bytes)`). Those
+  files are gitignored, so whether the earlier note was wrong or the `.tex` was
+  regenerated since cannot be recovered from history. The measured number is
+  two.
+
+  Strict mode overflows too, so this is not an aggressive-mode problem — the
+  *source* resumes already need hand-tuning to fit, and the generator only
+  grows them.
 
   (An earlier version of this note claimed four of five fit on one page. Those
   measurements were taken while bullets were overlapping — see §10d. Page counts

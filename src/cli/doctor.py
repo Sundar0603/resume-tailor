@@ -6,12 +6,16 @@ Verifies that the AI provider stack is correctly configured and reachable.
 On first run, guides the user through provider selection and configuration.
 On subsequent runs, loads the saved configuration and runs a smoke test.
 
+It also reports whether the LaTeX toolchain the PDF Compiler needs is
+present, since a working provider is only half of what a run requires.
+
 The CLI communicates exclusively with:
     - ConfigManager
     - CredentialManager
     - ProviderFactory
+    - the compiler's engine resolver
 
-It never touches HTTP, SDKs, or API keys directly.
+It never touches HTTP, SDKs, subprocesses or API keys directly.
 """
 
 from __future__ import annotations
@@ -20,6 +24,7 @@ from typing import Optional
 
 import typer
 
+from src.compiler import DEFAULT_LATEX_ENGINE, LatexEngineNotFoundError, resolve_engine
 from src.config.credentials import CredentialManager
 from src.config.exceptions import ConfigError
 from src.config.manager import ConfigManager
@@ -236,9 +241,37 @@ def _run_smoke_test(
     _print_success("Connected successfully")
     _print_section("Model Response")
     typer.echo(f"  {response.strip()}")
-    typer.echo("")
-    typer.echo("All checks passed.")
-    typer.echo("")
+
+
+# ---------------------------------------------------------------------------
+# LaTeX toolchain
+# ---------------------------------------------------------------------------
+
+
+def _check_latex_toolchain() -> bool:
+    """
+    Report whether the PDF Compiler's engine can be found.
+
+    Diagnostic only: it never changes the exit code. A missing TeX distribution
+    stops the pipeline at the PDF, but analysis, planning and generation still
+    work, and doctor's contract has always been to describe what it finds.
+
+    Only the path is reported. Running the engine to read its version would put
+    a subprocess call in the CLI layer, which this module does not do.
+    """
+    _print_section("LaTeX Toolchain")
+    try:
+        engine = resolve_engine(DEFAULT_LATEX_ENGINE)
+    except LatexEngineNotFoundError:
+        _print_failure(f"{DEFAULT_LATEX_ENGINE} not found")
+        typer.echo("")
+        typer.echo("PDF output is unavailable until a TeX distribution is installed.")
+        typer.echo("  \u2022 Install TinyTeX: https://yihui.org/tinytex/")
+        typer.echo("  \u2022 Make sure its bin directory is on PATH")
+        return False
+    _print_success(f"{DEFAULT_LATEX_ENGINE} found")
+    typer.echo(f"  {engine}")
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -292,3 +325,13 @@ def doctor(
 
     # --- Run smoke test ---
     _run_smoke_test(config, credential_manager)
+
+    # --- Report the LaTeX toolchain ---
+    latex_available = _check_latex_toolchain()
+
+    typer.echo("")
+    if latex_available:
+        typer.echo("All checks passed.")
+    else:
+        typer.echo("Provider checks passed. The LaTeX toolchain needs attention.")
+    typer.echo("")

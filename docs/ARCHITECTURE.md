@@ -2,11 +2,41 @@ This document is the authoritative source for all architectural decisions in Res
 
 Resume Tailor CLI v1.0
 
-**Version:** 1.0
+**Version:** 1.1
 
 **Status:** Frozen
 
-**Last Updated:** 2026-07-20
+**Last Updated:** 2026-08-26
+
+## Amendment Log
+
+This document is Frozen: implementation may not diverge from it, but the
+document itself may be corrected when it is found to describe something the
+project never built. Each entry below records such a correction.
+
+**1.1 — 2026-08-26**
+
+- *Technology Decisions* corrected to the versions and libraries actually in
+  use. Python is 3.9, not 3.12+. Configuration is TOML plus the OS keyring, not
+  PyYAML. Rich and PyMuPDF are listed as not yet adopted rather than as current
+  choices.
+- *Folder Structure* corrected. `generated/`, `artifacts/`, `logs/` and a
+  top-level `prompts/` were never created; `output/` is the single artifact
+  root and prompts live in `src/prompts/`. The `src/` listing now names the
+  packages that exist and marks the ones still to come.
+- *Artifacts* changed from flat `artifacts/attempt_1.pdf` to nested
+  `output/compile/attempt_1/`. Reason: `output/` is already gitignored,
+  `artifacts/` was not, and one artifact root is better than two.
+- *Compiler* expanded from three lines to its actual contract, following the
+  implementation of the PDF Compiler in task 015.
+- *Related Documents* — `ROADMAP.md` marked as not yet written, and
+  `IMPLEMENTATION_GUIDE.md` marked as a stub, rather than referenced as though
+  both exist.
+
+**1.0 — 2026-07-20**
+
+- Original frozen architecture. The Resume Planner stage was added to the
+  pipeline during task 012, which this document already reflects.
 
 Vision
 
@@ -165,79 +195,103 @@ ReportGenerator
 MarkdownParser
 
 Technology Decisions
-Component Technology
-Python 3.12+
-Package Manager uv
-CLI Typer
-Terminal UI Rich
-Config PyYAML
-Data Models Pydantic
-PDF Analysis PyMuPDF
-Testing pytest
-Rendering LaTeX
-LLM Provider Pluggable (Ollama/OpenAI/Anthropic/Gemini/etc.)
+
+| Component | Technology |
+|---|---|
+| Python | 3.9+ (`pyproject.toml` requires `>=3.9`; the venv is 3.9) |
+| Package Manager | pip via the project venv (`uv` is not required and is often absent from PATH) |
+| CLI | Typer |
+| Terminal UI | plain `typer.echo` — Rich is **not adopted** |
+| Config | TOML at `~/.resume-tailor/config.toml`, API keys in the OS keyring |
+| Data Models | Pydantic v2 |
+| PDF Analysis | **not yet adopted** — planned for the Quality Gate |
+| PDF Compilation | pdflatex, invoked by `src/compiler/` |
+| Testing | pytest |
+| Rendering | LaTeX, from frozen templates |
+| LLM Provider | Pluggable (Ollama/OpenAI/Anthropic/Gemini/OpenRouter) |
+
+Notes on the corrections in 1.1:
+
+- **Python 3.9, not 3.12+.** Use `typing.List` / `typing.Optional`; the
+  `X | Y` union syntax will not parse.
+- **TOML, not PyYAML.** PyYAML is not installed. `config/config.yaml` exists
+  only because this document once mandated the path — nothing in `src/` reads
+  it. Real configuration is `~/.resume-tailor/config.toml` via
+  `src/config/manager.py`, with credentials in the OS keyring via
+  `src/config/credentials.py`.
+- **Rich and PyMuPDF are not installed.** They remain reasonable future
+  choices; listing them as current decisions misdescribed the project.
+
 Folder Structure (This folder structure is considered part of the architecture. Implementation tasks should not modify it unless the architecture document is explicitly updated)
+```text
 resume-tailor/
 
-README.md
-ARCHITECTURE.md
-ROADMAP.md
+    README.md
+    pyproject.toml
 
-pyproject.toml
+    docs/
+        ARCHITECTURE.md
+        COMPONENT_SPECIFICATIONS.md
+        CODING_STANDARDS.md
+        IMPLEMENTATION_GUIDE.md     # stub
+        PROJECT_KNOWLEDGE.md        # running reference, updated each task
 
-config/
-config.yaml
+    config/
+        config.yaml                 # inert; real config is ~/.resume-tailor/config.toml
 
-content/
-backend.md
-fullstack.md
-cybersecurity.md
+    content/
+        backend_resume.md
+        fullstack_resume.md
+        cybersecurity_resume.md
 
-templates/
-backend.tex
-fullstack.tex
-cybersecurity.tex
-masterTemplates/          # the original filled-in resumes, kept for reference
+    templates/
+        backend.tex
+        fullstack.tex
+        cybersecurity.tex
+        masterTemplates/            # the original filled-in resumes, kept for reference
 
-prompts/
-jd_analysis.md
-strict.md
-aggressive.md
-revision.md
+    output/                         # gitignored; the single artifact root
+        resumes/latex/              # rendered .tex, one per resume
+        tex/                        # ad-hoc tailored .tex, {resume}_{mode}.tex
+        compile/                    # compilation attempts, one directory each
 
-generated/
+    tasks/
+    tests/
 
-output/
+    src/
+        cli/
+        parser/
+        validation/
+        analyzer/
+        planner/
+        generator/
+        renderer/                   # Markdown serializer + LaTeX renderer
+        compiler/                   # pdflatex invocation
+        providers/
+        config/
+        prompts/
+        helpers/
+        entity_ids.py
+        vocabulary.py
 
-artifacts/
+        quality_gate/               # not yet built
+        report/                     # not yet built
+```
 
-logs/
+Corrections made in 1.1:
 
-tests/
-
-src/
-
-    cli/
-
-    parser/
-
-    analyzer/
-
-    planner/
-
-    generator/
-
-    renderer/
-
-    quality_gate/
-
-    report/
-
-    providers/
-
-    models/
-
-    utils/
+- **`generated/`, `artifacts/` and `logs/` were never created.** `output/` is
+  the single artifact root, and it is the only one in `.gitignore`. Anything
+  that wants to write artifacts writes under `output/`.
+- **`prompts/` is not top-level.** Prompt construction lives in `src/prompts/`
+  and in each component's own `prompts.py`; there are no prompt Markdown files.
+- **There is no `src/models/` or `src/utils/`.** Models live beside the code
+  that owns them (`src/parser/models.py`, `src/planner/models.py`, and so on),
+  and shared helpers are `src/helpers/`, `src/entity_ids.py` and
+  `src/vocabulary.py`.
+- **`config/config.yaml` is inert.** Nothing in `src/` reads it. It exists only
+  because this document mandated the path.
+- **Resume files are `{name}_resume.md`**, not `{name}.md`.
 
 Resume Model
 
@@ -454,6 +508,40 @@ pdflatex
 Produces
 
 resume.pdf
+
+Expanded in 1.1, following the implementation in task 015.
+
+The Compiler's only question is **"did the engine produce a readable PDF?"**
+It makes no quality judgement: page count, spacing, orphan words and overfull
+boxes all belong to the Quality Gate. It never modifies or repairs the LaTeX it
+is given.
+
+```python
+PDFCompiler(engine="pdflatex", timeout_seconds=120).compile(
+    latex_source, output_directory="output/compile/attempt_1", job_name="resume"
+) -> CompilationResult
+```
+
+- **Each compilation runs in its own temporary directory**, then copies its
+  artifacts into the caller-owned output directory. This is what makes repeated
+  and concurrent compilations safe, and keeps auxiliary files out of the
+  project tree.
+- **The caller owns attempt numbering.** The Compiler owns only the base file
+  name within a directory.
+- **Success requires both a zero exit status and a readable PDF.** Either alone
+  is insufficient: under `-interaction=nonstopmode` the engine can write a
+  partial PDF and still exit non-zero.
+- **It raises rather than returning a status flag.** `CompilationFailedError`
+  carries the exit code and the path to the preserved log, which the Revision
+  Engine needs.
+- **Artifacts are preserved before any exception is raised**, so a failed
+  attempt is always debuggable. The `.tex` and `.log` survive every failure,
+  including a timeout.
+- **Compilation is deterministic.** `SOURCE_DATE_EPOCH` and `FORCE_SOURCE_DATE`
+  are pinned in the engine's environment; without them pdflatex stamps the wall
+  clock into the PDF and identical source produces different bytes.
+- **The engine is configurable and never hardcoded to an absolute path.** It is
+  resolved through `PATH`, and an explicit executable path is also accepted.
 Quality Gate
 
 The Quality Gate is the heart of the system.
@@ -646,21 +734,28 @@ Example
 
 Every attempt is preserved.
 
-artifacts/
-
-attempt_1.pdf
-
-attempt_1.tex
-
-attempt_1_report.json
-
-attempt_2.pdf
-
-...
-
-final.pdf
+```text
+output/
+    compile/
+        attempt_1/
+            resume.tex
+            resume.pdf
+            resume.log
+        attempt_2/
+            resume.tex
+            resume.log          # a failed attempt keeps its source and log
+        final/
+            resume.pdf
+```
 
 Useful for debugging and prompt tuning.
+
+Changed in 1.1. This section previously specified a flat top-level
+`artifacts/attempt_1.pdf`. Artifacts now nest one directory per attempt under
+`output/`, because `output/` is already gitignored and a single artifact root
+is better than two. The per-attempt quality report (`attempt_1_report.json` in
+the original) belongs to the Quality Gate and will join its attempt directory
+when that stage is built.
 
 CLI
 resume-tailor
@@ -766,7 +861,11 @@ Version 1 intentionally does NOT support:
 The architecture is supported by the following documents:
 
 - `COMPONENT_SPECIFICATIONS.md` — Responsibilities, contracts, inputs, outputs, and boundaries for each major component.
-- `IMPLEMENTATION_GUIDE.md` — Rules and guidelines for implementing the architecture.
+- `IMPLEMENTATION_GUIDE.md` — Rules and guidelines for implementing the architecture. **Currently a stub of bare headings.**
 - `CODING_STANDARDS.md` — Coding conventions and quality requirements.
-- `ROADMAP.md` — Planned features beyond Version 1.
+- `PROJECT_KNOWLEDGE.md` — Running reference for the codebase as built, updated at the end of each task. Where this document states intent, that one states what exists.
+- `ROADMAP.md` — Planned features beyond Version 1. **Not yet written.**
 - `tasks/` — Incremental implementation tasks for developers and AI agents.
+
+The `ROADMAP.md` and `IMPLEMENTATION_GUIDE.md` annotations were added in 1.1:
+both were referenced here as though complete, and neither was.

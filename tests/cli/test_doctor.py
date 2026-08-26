@@ -24,6 +24,7 @@ from typer.testing import CliRunner
 
 from src.analyzer.provider import LLMProvider
 from src.cli.doctor import app
+from src.compiler import LatexEngineNotFoundError
 from src.config.manager import ConfigManager
 from src.config.models import ProviderType, ResumeTailorConfig
 from src.providers.base import (
@@ -180,8 +181,11 @@ class TestSmokeTestSuccess:
         assert "Resume Tailor is working." in result.output
 
     def test_displays_all_checks_passed(self, config_file):
+        # The summary now also accounts for the LaTeX toolchain, so the engine
+        # is forced present rather than left to whatever this machine has.
         with patch("src.cli.doctor.ProviderFactory.create", return_value=FakeProvider()):
-            result = _invoke_doctor(config_file)
+            with patch("src.cli.doctor.resolve_engine", return_value="/usr/bin/pdflatex"):
+                result = _invoke_doctor(config_file)
         assert "All checks passed." in result.output
 
     def test_exit_code_zero(self, config_file):
@@ -395,3 +399,47 @@ class TestIntegration:
         with patch("src.cli.doctor.ProviderFactory.create", return_value=FakeProvider()):
             result = _invoke_doctor(config_file)
         assert "Resume Tailor Doctor" in result.output
+
+
+# ---------------------------------------------------------------------------
+# LaTeX toolchain
+# ---------------------------------------------------------------------------
+
+
+class TestLatexToolchain:
+    def test_reports_the_engine_when_present(self, config_file):
+        with patch("src.cli.doctor.ProviderFactory.create", return_value=FakeProvider()):
+            with patch("src.cli.doctor.resolve_engine", return_value="/usr/bin/pdflatex"):
+                result = _invoke_doctor(config_file)
+        assert "LaTeX Toolchain" in result.output
+        assert "/usr/bin/pdflatex" in result.output
+
+    def test_reports_a_missing_engine(self, config_file):
+        with patch("src.cli.doctor.ProviderFactory.create", return_value=FakeProvider()):
+            with patch(
+                "src.cli.doctor.resolve_engine",
+                side_effect=LatexEngineNotFoundError("nope"),
+            ):
+                result = _invoke_doctor(config_file)
+        assert "pdflatex not found" in result.output
+        assert "TinyTeX" in result.output
+
+    def test_a_missing_engine_does_not_claim_all_checks_passed(self, config_file):
+        with patch("src.cli.doctor.ProviderFactory.create", return_value=FakeProvider()):
+            with patch(
+                "src.cli.doctor.resolve_engine",
+                side_effect=LatexEngineNotFoundError("nope"),
+            ):
+                result = _invoke_doctor(config_file)
+        assert "All checks passed." not in result.output
+        assert "needs attention" in result.output
+
+    def test_a_missing_engine_does_not_fail_the_command(self, config_file):
+        # Diagnostic only: analysis, planning and generation still work.
+        with patch("src.cli.doctor.ProviderFactory.create", return_value=FakeProvider()):
+            with patch(
+                "src.cli.doctor.resolve_engine",
+                side_effect=LatexEngineNotFoundError("nope"),
+            ):
+                result = _invoke_doctor(config_file)
+        assert result.exit_code == 0

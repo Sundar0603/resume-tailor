@@ -33,7 +33,6 @@ Exit status is 0 when every check passes, 1 otherwise.
 import argparse
 import re
 import shutil
-import subprocess
 import sys
 import tempfile
 import time
@@ -42,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.analyzer import JDAnalyzer  # noqa: E402
+from src.compiler import CompilationFailedError, PDFCompiler  # noqa: E402
 from src.config.credentials import CredentialManager  # noqa: E402
 from src.config.manager import ConfigManager  # noqa: E402
 from src.generator import ResumeGenerator  # noqa: E402
@@ -68,28 +68,27 @@ def check(label: str, passed: bool) -> bool:
 
 def compile_document(latex: str) -> bool:
     """
-    Compile with pdflatex in a temporary directory.
+    Compile through the PDF Compiler in a throwaway directory.
 
     Reports the page count and any missing-glyph warnings. One page is the
     design's whole intent, so a second page is printed as a warning even though
     trimming to fit belongs to the Quality Gate rather than the renderer.
+
+    The compiler owns the engine invocation and its own isolated workspace; the
+    directory here only holds the artifacts long enough to read the log.
     """
     with tempfile.TemporaryDirectory() as directory:
-        source = Path(directory) / "resume.tex"
-        source.write_text(latex, encoding="utf-8")
-        completed = subprocess.run(
-            ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", source.name],
-            cwd=directory,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-        )
-        log = completed.stdout.decode("utf-8", "replace")
-        if not (Path(directory) / "resume.pdf").is_file():
-            print("    pdflatex output tail:")
+        try:
+            result = PDFCompiler().compile(latex, output_directory=directory)
+        except CompilationFailedError as failure:
+            print("    {}".format(failure))
+            log = Path(failure.log_path).read_text(encoding="utf-8", errors="replace")
+            print("    pdflatex log tail:")
             for line in log.splitlines()[-25:]:
                 print("      " + line)
             return False
 
+        log = Path(result.log_path).read_text(encoding="utf-8", errors="replace")
         match = re.search(r"Output written on \S+ \((\d+) page", log)
         pages = int(match.group(1)) if match else 0
         print("    pages: {}".format(pages or "unknown"))

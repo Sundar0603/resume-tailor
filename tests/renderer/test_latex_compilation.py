@@ -17,11 +17,11 @@ up the toolchain with TinyTeX plus the packages listed in PROJECT_KNOWLEDGE
 
 import re
 import shutil
-import subprocess
 from pathlib import Path
 
 import pytest
 
+from src.compiler import CompilationFailedError, PDFCompiler
 from src.parser import ResumeParser
 from src.renderer import LatexRenderer
 
@@ -35,20 +35,25 @@ PAGE_COUNT = re.compile(r"Output written on \S+ \((\d+) page")
 
 
 def compile_latex(latex, tmp_path):
-    """Compile a document and return (page_count, log). page_count is 0 on failure."""
-    source = tmp_path / "resume.tex"
-    source.write_text(latex, encoding="utf-8")
-    completed = subprocess.run(
-        ["pdflatex", "-interaction=nonstopmode", "-halt-on-error", "resume.tex"],
-        cwd=str(tmp_path),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    log = completed.stdout.decode("utf-8", "replace")
-    if not (tmp_path / "resume.pdf").is_file():
-        return 0, log
+    """
+    Compile a document and return (page_count, log). page_count is 0 on failure.
+
+    Delegates to the PDF Compiler rather than shelling out here. The log is now
+    TeX's own transcript instead of captured stdout — a superset, and the only
+    place a "Missing character" warning is guaranteed to appear.
+    """
+    try:
+        result = PDFCompiler().compile(latex, output_directory=str(tmp_path))
+    except CompilationFailedError as failure:
+        return 0, _read_log(failure.log_path)
+    log = _read_log(result.log_path)
     match = PAGE_COUNT.search(log)
     return (int(match.group(1)) if match else -1), log
+
+
+def _read_log(path):
+    """Read a compiler log, tolerating the non-UTF-8 bytes TeX sometimes emits."""
+    return Path(path).read_text(encoding="utf-8", errors="replace")
 
 
 class TestCompiles:
