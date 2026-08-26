@@ -59,3 +59,56 @@ class TestBraceDoubling:
         assert '"summary_plan": {' in prompt
         assert "{{" not in prompt
         assert "}}" not in prompt
+
+
+class TestEntryManifest:
+    """
+    The strict-mode entry manifest, and the whitespace boundary around it.
+
+    Measured on cybersecurity_resume against the application-developer JD,
+    4 trials per condition against one fixed JobAnalysis:
+
+        mode          without manifest   with manifest
+        STRICT             0/4               4/4
+        AGGRESSIVE         4/4               0/4
+
+    Hence strict-only. See the comment above ``_ENTRY_MANIFEST_TEMPLATE``.
+    """
+
+    def test_strict_prompts_carry_the_manifest(self):
+        resume, analysis = make_resume(), make_job_analysis()
+        prompt = build_planning_prompt(resume, analysis, PlanningMode.STRICT)
+        assert "Entry manifest for THIS resume" in prompt
+
+    def test_aggressive_prompts_do_not(self):
+        resume, analysis = make_resume(), make_job_analysis()
+        prompt = build_planning_prompt(resume, analysis, PlanningMode.AGGRESSIVE)
+        assert "Entry manifest" not in prompt
+
+    def test_the_aggressive_prompt_has_no_stray_blank_line(self):
+        # The manifest slot must contribute exactly nothing in aggressive mode.
+        # One extra blank line changed greedy output enough to invert an A/B
+        # result during development, so this is pinned rather than trusted.
+        resume, analysis = make_resume(), make_job_analysis()
+        prompt = build_planning_prompt(resume, analysis, PlanningMode.AGGRESSIVE)
+        assert "</job_analysis>\n\nReturn ONLY" in prompt
+        assert "\n\n\nReturn ONLY" not in prompt
+
+    def test_the_manifest_names_every_entity_id(self):
+        resume = make_resume()
+        prompt = build_planning_prompt(resume, make_job_analysis(), PlanningMode.STRICT)
+        manifest = prompt[prompt.index("Entry manifest") :]
+        for group in (resume.skills, resume.experiences, resume.projects):
+            for entity in group:
+                assert entity.id in manifest
+
+    def test_the_manifest_states_the_exact_experience_count(self):
+        resume = make_resume()
+        prompt = build_planning_prompt(resume, make_job_analysis(), PlanningMode.STRICT)
+        assert "EXACTLY {} entries".format(len(resume.experiences)) in prompt
+
+    def test_the_manifest_is_deterministic(self):
+        resume, analysis = make_resume(), make_job_analysis()
+        left = build_planning_prompt(resume, analysis, PlanningMode.STRICT)
+        right = build_planning_prompt(resume, analysis, PlanningMode.STRICT)
+        assert left == right

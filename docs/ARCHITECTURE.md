@@ -197,6 +197,7 @@ templates/
 backend.tex
 fullstack.tex
 cybersecurity.tex
+masterTemplates/          # the original filled-in resumes, kept for reference
 
 prompts/
 jd_analysis.md

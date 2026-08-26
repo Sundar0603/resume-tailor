@@ -3,9 +3,10 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 013 (Markdown Serializer). Baseline: **736 tests
-passing** (636 after task 012). Update this file at the end of each task; do
-not rewrite it.
+Status as of the end of task 014 (LaTeX Renderer). Baseline: **825 tests
+passing** (736 after task 013); 8 of those are pdflatex compilation tests that
+skip when no TeX distribution is on PATH. Update this file at the end of each
+task; do not rewrite it.
 
 ---
 
@@ -19,7 +20,7 @@ Markdown Resume
   → Resume Planner       ✅ 011
   → Resume Generator     ✅ 012
   → Markdown Serializer  ✅ 013
-  → LaTeX Renderer       ⬜
+  → LaTeX Renderer       ✅ 014
   → pdflatex Compiler    ⬜
   → Quality Gate         ⬜
   → Revision Engine      ⬜
@@ -454,7 +455,25 @@ re-running the experiment that produced them.
    planner proposing a brand-new skill through `skills_to_add` in strict mode.
    That became rule 26.
 
-7. **A rule enforced in one layer must be enforced in every layer that can
+8. **Measure against an exact baseline, or measure nothing.** Validating the
+   strict entry manifest, the first A/B built its no-manifest baseline by
+   string-removing the manifest from the new prompt. That left one extra blank
+   line. Under greedy decoding it was enough to change the output, and the A/B
+   came back 4/4 both ways — "the fix does nothing". With the baseline
+   reconstructed byte-exactly, the same test read 0/4 without and 4/4 with.
+
+   The same flaw then hid a real regression in the other direction: the manifest
+   *broke* aggressive mode, 4/4 → 0/4 with unbalanced JSON, because aggressive
+   must hedge every count with "plus one entry per GENERATE" — reintroducing the
+   ambiguity the manifest exists to remove. Hence strict-only, and hence
+   `_entry_manifest` returning exactly `""` elsewhere, pinned by
+   `TestEntryManifest::test_the_aggressive_prompt_has_no_stray_blank_line`.
+
+   Two habits follow. A prompt A/B must diff the two prompts and confirm the
+   only difference is the thing under test. And a prompt change must be measured
+   in **every** mode it touches, not just the one being fixed.
+
+9. **A rule enforced in one layer must be enforced in every layer that can
    breach it.** Strict mode's promise is "no new facts". The planner enforced
    it for `GENERATE` and the generator enforced it for prose, but
    `skills_to_add` slipped between them. When adding a mode rule, walk every
@@ -737,6 +756,150 @@ offline suite covers the serializer's logic but cannot produce a realistic
 
 ---
 
+## 10d. LaTeX Renderer (task 014)
+
+`src/renderer/latex_renderer.py`, beside the Markdown serializer. Same shape:
+stateless class, banner-comment sections, `List[str]` builders, Python 3.9
+typing, no LLM call, no mutation.
+
+```python
+LatexRenderer(template_directory="templates").render(resume) -> str
+LatexRenderer().render_to_file(resume, "output/resumes/latex") -> Path
+```
+
+`render_to_file` writes `{metadata.resume}.tex` and is **the first thing in
+`src/` that writes a file** other than config. `output/` is gitignored.
+
+**The templates were not templates.** `templates/` held three hardcoded copies
+of the author's real resume — no `{{FOO}}`, no jinja, nothing to preserve. Task
+014 was therefore two jobs: author the templates, then write the renderer. The
+originals now live untouched in `templates/masterTemplates/`, and
+`backend.tex` / `fullstack.tex` / `cybersecurity.tex` are the placeholder
+copies. Their preambles (lines 1–156: documentclass, packages, colors,
+`\titleformat`, every `\resume*` macro) are byte-identical to the masters, and
+`tests/renderer/test_latex_templates.py` pins that.
+
+**Names resolve directly.** `templates/{metadata.template}.tex`, no mapping
+dict — which is why the copies are named `backend`/`fullstack`/`cybersecurity`
+rather than the masters' `backendDeveloper`/`fullStackDeveloper`.
+
+**Eleven placeholders, all required** (`REQUIRED_PLACEHOLDERS`): five contact
+fields plus `CONTACT_EMAIL_URL`, then `SUMMARY`, `SKILLS`, `EXPERIENCE`,
+`PROJECTS`, `EDUCATION`. Both directions are checked — a template missing one
+raises, and a leftover `{{...}}` after substitution raises. The four structural
+placeholders receive **one pre-built block each**, assembled in Python, because
+those sections are macro trees (`\resumeSubheading`, nested `\resumeItem`
+lists), not string slots.
+
+**Five fields are deliberately dropped**, because the template's design has
+nowhere to put them: `Experience.employment_type`, `Experience.technologies`,
+`Experience.domains`, `Project.type`, `Project.domains`. They stay runtime-only,
+feeding the Planner and Generator without reaching the PDF. This makes the task
+doc's "preserve technology order / domain order" requirement **vacuous for
+experience** — projects keep theirs via the title parenthetical. Pinned by
+`TestDroppedFields` so the omission stays deliberate rather than becoming a
+regression someone "fixes".
+
+**Escaping runs before transliteration, and this order is load-bearing.**
+Several transliterations emit LaTeX markup of their own (`…` → `\ldots{}`,
+`•` → `$\bullet$`); escaping afterwards turned that markup into literal
+backslashes and braces. Caught by a test, not by reading. Escaping itself is a
+**single regex pass** over the ten specials, so the replacement for `\` cannot
+be re-escaped by a later rule — the classic sequential-`replace` bug.
+
+**URLs use a second, narrower escaper.** Inside `\href`'s first argument only
+`\ % # { }` are escaped; `_`, `&`, `~`, `?` and `=` must survive or the link
+stops resolving. Running a URL through the body-text escaper is the standard
+way to corrupt one.
+
+**Unicode: transliterate a known table, raise on the rest.** Output is pure
+ASCII, verified. An unknown character raises `RenderingError` naming the field
+rather than being dropped.
+
+**An empty list environment is a LaTeX error, not an empty list.**
+`\begin{itemize}` with no `\item` fails to compile, so:
+- An entity with no highlights emits **no** `\resumeItemListStart` at all.
+- Experiences, projects and education **raise** when empty, because the
+  *template* opens those environments and the renderer cannot close over
+  nothing. The validator already requires 2 experiences and ≥1 education, so
+  this is a backstop.
+- Skills are safe either way: the template supplies the single `\item`.
+
+**Two things the design gives up, both accepted:**
+- **Bold metrics are gone.** The masters hand-bold figures
+  (`by \textbf{70\%}`); generated highlights are plain escaped strings. Every
+  rendered resume reads flatter than the master. Auto-bolding numbers is a
+  layout decision and belongs to the Quality Gate, not here.
+- **`CERTIFICATIONS` is static template text** in the backend/fullstack copies.
+  The Resume model has no certifications field, so the renderer never touches
+  that section. `cybersecurity.tex` has none, matching its master.
+
+**cybersecurity's experience style was normalised.** Its master uses
+`\resumeSingleSubheading{Company - Role}{Duration}{}{}`; the copy uses
+`\resumeSubheading` like the other two so the renderer emits one block shape
+and needs no per-template branching. The master keeps its original look.
+
+**Do NOT emit per-bullet negative vspace. This was tried and it silently broke
+the layout.** The masters use `\vspace{-4px}` / `-8px` after project *titles*
+and `-12pt` at a section end — structural, one per title. They also sprinkle
+negative vspace after *individual bullets*, but only sporadically, hand-placed
+document by document to squeeze one particular resume onto one page.
+
+An intermediate renderer reproduced that mechanically: `\vspace{-12px}` after
+every project bullet. Roughly -9pt per bullet exceeds the inter-item gap, so
+consecutive multi-line bullets **printed on top of each other**. The user caught
+it by looking at the PDF.
+
+**Every automated signal said it was fine, and one of them said it was better:**
+- pdflatex: exit 0, no warnings — negative vspace never reports overfull.
+- Brace balance, ASCII, placeholder checks: all green.
+- **Page count went 2 → 1** — because the text was collapsing onto itself
+  rather than fitting. The metric improved *because* of the defect.
+- A test asserting `pages == 1` passed on the broken document, locking the bug
+  in. An assertion satisfiable by destroying the layout is worse than none.
+
+The lesson generalises past LaTeX: **when the success metric can be satisfied by
+breaking the thing being measured, the metric is not evidence.** Page count is a
+compression measure, and text overlap is infinite compression. `test_latex_overlap.py`
+now pins the structural invariant (no trailing `\vspace{-` on a bullet line),
+which needs no TeX distribution.
+
+Hand-tuning spacing to reach one page is exactly the layout optimization the
+**Quality Gate** owns. The renderer emits structural spacing and stops.
+
+### Toolchain
+
+**TinyTeX**, installed at `~/Library/TinyTeX` (no sudo; `bin/universal-darwin`
+appended to `~/.zshrc` and `~/.bash_profile`). Packages beyond the base
+install: `preprint` (fullpage), `titlesec`, `marvosym`, `enumitem`, `hyperref`,
+`babel-english`, `tools`, `fontawesome5`, `graphics`, `pgf`, `xcolor`,
+`cormorantgaramond`, `charter`, `psnfss`, `symbol`, `zapfding`, `etoolbox`,
+`fontaxes`. Add a missing one with `tlmgr install <pkg>`; find which package
+owns a missing file with `tlmgr search --global --file /<name>.sty`.
+
+`tests/renderer/test_latex_compilation.py` compiles for real and **skips
+cleanly when pdflatex is absent**, so the suite still runs anywhere. It pins
+one page for all three canonical resumes, compiles every template, compiles
+every escaped special character and every transliterated glyph, and asserts
+pdflatex reports no `Missing character` — a glyph the font lacks is dropped
+silently in the PDF, so the warning is the only signal that content was lost.
+Eight tests, ~5 s.
+
+Verified: all three canonical resumes and all five live-generated ones compile
+with zero overfull/underfull boxes and zero missing glyphs. **Page counts run to
+two**, and that is the honest number — the masters reach one page only through
+the hand-tuning described above. Fitting is the Quality Gate's work, and §11
+records how much of it there is.
+
+Ad-hoc tailored output lives in `output/tex/` as
+`{resume}_{mode}.tex`, written by calling `render()` and saving directly rather
+than `render_to_file`, whose `{metadata.resume}.tex` naming would collide
+between modes.
+
+Baseline after this task: **825 tests passing** (736 after task 013).
+
+---
+
 ## 11. Known open items
 
 - **`src/cli/_common.py` is not extracted.** `analyze.py` and `plan.py` already
@@ -783,7 +946,35 @@ offline suite covers the serializer's logic but cannot produce a realistic
   generator live. That command should also trigger the `src/cli/_common.py`
   extraction. The serializer is what it will write its output with.
 - **Nothing writes `generated.md` yet.** Task 013 built the serializer but no
-  caller. The Resume object still never leaves memory.
+  caller. `LatexRenderer.render_to_file` (task 014) is the only writer so far,
+  and only `verify_latex_render.py` calls it — there is still no CLI path from
+  a job description to a file on disk.
+- **Almost everything overflows one page, in both modes.** Five tailored
+  resumes generated live and compiled (`output/tex/`): four run to **two
+  pages**, only `fullstack_strict` fits one. Strict mode overflows too, so this
+  is not an aggressive-mode problem — the *source* resumes already need
+  hand-tuning to fit, and the generator only grows them.
+
+  (An earlier version of this note claimed four of five fit on one page. Those
+  measurements were taken while bullets were overlapping — see §10d. Page counts
+  from before that fix are all invalid.)
+
+  So the Quality Gate's trimming is not an edge case for aggressive runs; it is
+  on the critical path for essentially every resume. Worth knowing before
+  designing it: it needs to remove real content, not just tighten spacing.
+
+- **FIXED: the strict-mode shape bleed on cybersecurity_resume.** It was §9
+  lesson 2 one array further on — the model duplicated the *projects* into
+  `experience_plans` wearing the skills shape (`experience_id: "proj_001"`
+  carrying `new_category_name`/`skills_to_add`, action `REMOVE`), giving 4
+  entries where the resume has 2. Trigger: 6 skill categories (others have 5)
+  and a poorly-matched JD making the leading entries `REMOVE`, so the
+  "REMOVE + skills shape" pattern ran past the array boundary.
+
+  The prose rule "Exactly one entry per experience" was already in the prompt
+  and did not hold. The fix is the strict-only `_entry_manifest` — exact ids per
+  array, computed from the resume, placed last. All six pairings now pass 4/4
+  (24/24 trials); see §9 lesson 8 for why it is strict-only.
 - **`""` and `None` are indistinguishable through Markdown.** An optional
   scalar holding `""` is omitted and re-parses as `None`. Emitting
   `Location: ` with a trailing space would preserve it, at the cost of trailing

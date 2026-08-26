@@ -22,3 +22,17 @@ class SerializationError(RendererError):
     Resume *validity* is the Validator's job. This exception covers only the
     narrower question of whether a value survives the Markdown round trip.
     """
+
+
+class RenderingError(RendererError):
+    """
+    The Resume cannot be rendered into the selected LaTeX template.
+
+    Raised rather than emitting a document that would not compile, or one that
+    is quietly incomplete — a missing or unreadable template, a template that
+    does not declare a required placeholder, a section the template wraps in a
+    list environment that has no entries, or a character with no LaTeX
+    representation.
+
+    As with SerializationError, Resume *validity* is the Validator's job.
+    """

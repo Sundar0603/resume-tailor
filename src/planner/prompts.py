@@ -194,7 +194,7 @@ Job analysis:
 {job_analysis}
 </job_analysis>
 
-Return ONLY the JSON object. No explanation. No markdown. No extra text.
+{entry_manifest}Return ONLY the JSON object. No explanation. No markdown. No extra text.
 """
 
 
@@ -231,7 +231,88 @@ def build_planning_prompt(
         mode_rules=mode_rules,
         resume=resume_json,
         job_analysis=job_analysis.model_dump_json(indent=2),
+        entry_manifest=_entry_manifest(resume, mode),
     )
+
+
+#: Explicit per-array id manifest, appended last in the prompt.
+#:
+#: The prose rule "Exactly one entry per experience listed in the resume" was
+#: already present and did not hold. On the cybersecurity resume against the
+#: generic application-developer JD, qwen3.6 emitted **four** experience_plans
+#: entries: the two real ones, followed by the two *projects* duplicated into
+#: the same array wearing the skills shape — ``experience_id: "proj_001"``
+#: carrying ``new_category_name``/``skills_to_add``/``skills_to_remove``, with
+#: REMOVE actions experiences never allow. The projects were planned twice, once
+#: correctly and once malformed, killing the whole plan reproducibly.
+#:
+#: This is §9 lesson 2's positional shape-copying again, one array further on.
+#: The trigger is a long removal-heavy ``skills_plans`` prefix: this resume has
+#: six skill categories (the others have five) and the poorly-matched JD makes
+#: the first two REMOVE, establishing a strong "REMOVE + skills shape" pattern
+#: that bleeds past the array boundary.
+#:
+#: The fix is structural rather than prose, matching what worked for lesson 2:
+#: state the exact ids each array may contain, computed from the resume, and put
+#: it last so it is the final thing read before generation.
+#:
+#: **Strict mode only, and that boundary is measured, not stylistic.** On the
+#: failing pairing, 4 trials per condition against one fixed JobAnalysis:
+#:
+#:     mode        without manifest   with manifest
+#:     STRICT           0/4               4/4
+#:     AGGRESSIVE       4/4               0/4
+#:
+#: Aggressive has to hedge every count with "plus one entry per GENERATE", which
+#: reintroduces the ambiguity the manifest exists to remove, and the model
+#: returned unbalanced JSON every time. Aggressive never exhibited the bleed, so
+#: it gets no manifest. Adding one there is a regression, not an improvement.
+#:
+#: A methodological note, because it nearly inverted this conclusion: an earlier
+#: A/B built its baseline by string-removing the manifest, which left one extra
+#: blank line. Under greedy decoding that single character changed the output
+#: enough to make the manifest look useless (4/4 both ways). Reconstruct a
+#: baseline exactly, or measure nothing.
+_ENTRY_MANIFEST_TEMPLATE = """\
+Entry manifest for THIS resume. Counts and ids are exact:
+- skills_plans: one entry per id, in this order: {skill_ids}
+- experience_plans: EXACTLY {experience_count} entries, one per id, in this order: \
+{experience_ids}. No other id may appear in this array, and no project or skill \
+category id may appear in it. Only KEEP or REWRITE are valid here.
+- project_plans: one entry per id, in this order: {project_ids}
+
+Each array uses only its own shape. Never carry the field names of one array \
+into another.
+"""
+
+
+def _entry_manifest(resume: Resume, mode: PlanningMode) -> str:
+    """
+    Build the exact-id manifest for one resume.
+
+    Parameters
+    ----------
+    resume : Resume
+        The resume being planned against.
+    mode : PlanningMode
+        Strict forbids GENERATE, so the counts are exact in both directions.
+
+    Returns
+    -------
+    str
+        The manifest block, ending in a blank line.
+    """
+    if mode != PlanningMode.STRICT:
+        # Must be exactly empty: the template adds no whitespace around this
+        # slot, so aggressive prompts stay byte-identical to the pre-manifest
+        # ones. A single stray blank line changes greedy output — see above.
+        return ""
+    return _ENTRY_MANIFEST_TEMPLATE.format(
+        skill_ids=", ".join(category.id for category in resume.skills),
+        experience_count=len(resume.experiences),
+        experience_ids=", ".join(item.id for item in resume.experiences),
+        project_ids=", ".join(item.id for item in resume.projects),
+    ) + "\n"
 
 
 def _resume_projection(resume: Resume) -> Dict[str, Any]:
