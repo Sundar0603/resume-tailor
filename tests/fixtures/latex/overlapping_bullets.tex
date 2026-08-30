@@ -1,0 +1,291 @@
+%-------------------------
+% Resume in Latex
+% Author : Vaishanth
+% License : MIT
+%------------------------
+
+\documentclass[letterpaper,11pt]{article}
+
+\usepackage{latexsym}
+\usepackage[empty]{fullpage}
+\usepackage{titlesec}
+\usepackage{marvosym}
+\usepackage[usenames,dvipsnames]{color}
+\usepackage{verbatim}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage[english]{babel}
+\usepackage{tabularx}
+\usepackage{fontawesome5}
+\usepackage{multicol}
+\usepackage{graphicx}%\setmainfont{Times New Roman}
+\setlength{\multicolsep}{-3.0pt}
+\setlength{\columnsep}{-1pt}
+\input{glyphtounicode}
+
+\RequirePackage{tikz}
+\RequirePackage{xcolor}
+
+\definecolor{cvblue}{HTML}{0E5484}
+\definecolor{black}{HTML}{130810}
+\definecolor{darkcolor}{HTML}{0F4539}
+\definecolor{cvgreen}{HTML}{3BD80D}
+\definecolor{taggreen}{HTML}{00E278}
+\definecolor{SlateGrey}{HTML}{2E2E2E}
+\definecolor{LightGrey}{HTML}{666666}
+\colorlet{name}{black}
+\colorlet{tagline}{darkcolor}
+\colorlet{heading}{darkcolor}
+\colorlet{headingrule}{cvblue}
+\colorlet{accent}{darkcolor}
+\colorlet{emphasis}{SlateGrey}
+\colorlet{body}{LightGrey}
+
+%----------FONT OPTIONS----------
+% sans-serif
+% \usepackage[sfdefault]{FiraSans}
+% \usepackage[sfdefault]{roboto}
+% \usepackage[sfdefault]{noto-sans}
+% \usepackage[default]{sourcesanspro}
+
+% \usepackage[T1]{fontenc}
+% \usepackage[T1]{fontenc}
+% \usepackage{cochineal}
+% \usepackage{fourier}
+
+% \usepackage{fontspec}
+% \usepackage{polyglossia}
+% \setmainlanguage{german}
+% \setmainfont{Times New Roman}
+
+% serif
+\usepackage{CormorantGaramond}
+\usepackage{charter}
+
+% \pagestyle{fancy}
+% \fancyhf{}  % clear all header and footer fields
+% \fancyfoot{}
+% \renewcommand{\headrulewidth}{0pt}
+% \renewcommand{\footrulewidth}{0pt}
+
+% Adjust margins
+\addtolength{\oddsidemargin}{-0.6in}
+\addtolength{\evensidemargin}{-0.5in}
+\addtolength{\textwidth}{1.19in}
+\addtolength{\topmargin}{-.7in}
+\addtolength{\textheight}{1.4in}
+\urlstyle{same}
+
+\definecolor{airforceblue}{rgb}{0.36, 0.54, 0.66}
+
+\raggedbottom
+\raggedright
+\setlength{\tabcolsep}{0in}
+
+% Sections formatting
+\titleformat{\section}{
+  \vspace{-4pt}\scshape\raggedright\large\bfseries
+}{}{0em}{}[\color{black}\titlerule \vspace{-5pt}]
+
+% Ensure that generate pdf is machine readable/ATS parsable
+\pdfgentounicode=1
+
+%-------------------------
+% Custom commands
+\newcommand{\resumeItem}[1]{
+  \item\small{
+    {#1 \vspace{-1pt}}
+  }
+}
+
+\newcommand{\classesList}[4]{
+    \item\small{
+        {#1 #2 #3 #4 \vspace{-2pt}}
+  }
+}
+
+\newcommand{\resumeSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{\large#1} & \textbf{\small #2} \\
+      \textit{\large#3} & \textit{\small #4} \\
+      
+    \end{tabular*}\vspace{-7pt}
+}
+
+
+\newcommand{\resumeSingleSubheading}[4]{
+  \vspace{-2pt}\item
+    \begin{tabular*}{1.0\textwidth}[t]{l@{\extracolsep{\fill}}r}
+      \textbf{\large#1} & \textbf{\small #2} \\
+      
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubSubheading}[2]{
+    \item
+    \begin{tabular*}{0.97\textwidth}{l@{\extracolsep{\fill}}r}
+      \textit{\small#1} & \textit{\small #2} \\
+    \end{tabular*}\vspace{-7pt}
+}
+
+
+\newcommand{\resumeProjectHeading}[2]{
+    \item
+    \begin{tabular*}{1.001\textwidth}{l@{\extracolsep{\fill}}r}
+      \small#1 & \textbf{\small #2}\\
+    \end{tabular*}\vspace{-7pt}
+}
+
+\newcommand{\resumeSubItem}[1]{\resumeItem{#1}\vspace{-4pt}}
+
+\renewcommand\labelitemi{$\vcenter{\hbox{\tiny$\bullet$}}$}
+\renewcommand\labelitemii{$\vcenter{\hbox{\tiny$\bullet$}}$}
+
+\newcommand{\resumeSubHeadingListStart}{\begin{itemize}[leftmargin=0.0in, label={}]}
+\newcommand{\resumeSubHeadingListEnd}{\end{itemize}}
+\newcommand{\resumeItemListStart}{\begin{itemize}[leftmargin=0.1in]}
+\newcommand{\resumeItemListEnd}{\end{itemize}\vspace{-5pt}}
+
+\newcommand\sbullet[1][.5]{\mathbin{\vcenter{\hbox{\scalebox{#1}{$\bullet$}}}}}
+
+%-------------------------------------------\usepackage{fontspec}
+%%%%%%  RESUME STARTS HERE  %%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+\begin{document}
+%----------HEADING----------
+
+\vspace{-20px}
+\begin{center}
+    {\huge Sundar S} \\ \vspace{2pt} 
+    +91 7397398343 ~ 
+    \small{-}
+    \href{mailto:sundars0603@gmail.com}{\color{blue}sundars0603@gmail.com} ~ 
+    \small{-}
+    \href{https://www.linkedin.com/in/sundar-s-870042235/}{ \color{blue}{LinkedIn}}
+    \small{-}
+    \href{https://github.com/Sundar0603}{ \color{blue}{GitHub}} ~
+    \vspace{-7pt}
+\end{center}
+
+%----------------------------------------------------------------------------------------
+% SUMMARY
+%----------------------------------------------------------------------------------------
+
+\section{\color{airforceblue}SUMMARY} 
+Backend Software Engineer with 2 years of experience at Zoho building enterprise-scale Security Operations Center (SOC) platforms using Java, Spring Boot, Vue.js, Redis and MySQL. Experienced in designing distributed workflows, AI-assisted workflow automation and investigation platforms using LLM APIs and delivering scalable backend services supporting security investigations and automated incident management. Skilled in application software development lifecycle, code quality assurance, software testing, API versioning, and debugging and troubleshooting to deliver robust features end-to-end.
+\vspace{-10pt}
+
+
+
+%-----------PROGRAMMING SKILLS-----------
+\section{\color{airforceblue}TECHNICAL SKILLS}
+ \begin{itemize}[leftmargin=0in, label={}]
+    \small{\item{
+      \textbf{\normalsize{Backend:}}{ \normalsize{Spring Boot, REST APIs, JWT, Redis, System Design, Concurrency, Database Design, Query Optimization}} \\
+      \textbf{\normalsize{Programming Languages:}}{ \normalsize{Python, Java, JavaScript}} \\
+      \textbf{\normalsize{Tools:}}{ \normalsize{Git, Docker, Linux, Bash}} \\
+      \textbf{\normalsize{Concepts:}}{ \normalsize{Distributed Systems, API Design, Authentication and Authorization, Caching, Asynchronous Processing}} \\
+      \textbf{\normalsize{Databases:}}{ \normalsize{MySQL}} \\
+     }}
+ \end{itemize}
+ \vspace{-16pt}
+ 
+ %-----------EXPERIENCE-----------
+\section{\color{airforceblue}WORK EXPERIENCE}
+  \resumeSubHeadingListStart
+
+      \resumeSubheading
+            {Zoho Corporation}{Chennai}
+            {Software Developer}{May 2024 - Present}
+            \resumeItemListStart
+            \vspace{-1pt}
+            \resumeItem{\normalsize{Designed and implemented 20+ Spring Boot RESTful APIs with robust API versioning and interoperability strategies, ensuring seamless integration across enterprise applications.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Delivered end-to-end features for a complex SOC platform, managing the full application software development lifecycle from requirement analysis to deployment and code quality assurance.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Implemented comprehensive software testing and quality assurance processes for rule management workflows, validating data integrity and ensuring adherence to secure coding standards.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Collaborated with cross-functional teams to clarify requirements and integrate API dependencies, contributing to architectural guidelines and scalable backend service design.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Conducted extensive debugging and troubleshooting of moderately complex software issues, optimizing database queries and caching layers to improve system performance and reliability.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Developed high-performance event-processing rules and automated ticket generation features, breaking down requirements into maintainable modules and verifying functional correctness.}}
+      \vspace{-12px}
+            \resumeItemListEnd
+
+      \resumeSubheading
+            {Zoho Corporation}{Chennai}
+            {Software Developer Intern}{Dec 2023 - Apr 2024}
+            \resumeItemListStart
+            \vspace{-1pt}
+            \resumeItem{\normalsize{Participated in the software development lifecycle by implementing service worker-based request interception mechanisms to streamline frontend-backend communication and API functionality.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Provided production support and system maintenance for high-volume enterprise workflow platforms, ensuring consistent application availability across distributed environments.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Managed customer issue handling and defect resolution by implementing data retention policies that maintained query performance and optimized coding practices at scale.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Collaborated with engineering teams to investigate product maintenance issues and applied architectural guidelines to support production releases and deployment consistency.}}
+      \vspace{-12px}
+            \resumeItemListEnd
+  \resumeSubHeadingListEnd
+\vspace{-15pt}
+
+
+ %-----------PROJECTS-----------
+\section{\color{airforceblue}PROJECTS}
+    \resumeItemListStart
+
+      \resumeItem{\normalsize{\textbf{Triage Studio} -} \textit{(Python, Vue.js, REST APIs)} \href{https://github.com/Sundar0603/Daily-Studies}{\color{blue}\underline{Link}}}
+      \vspace{-4px}
+      \resumeItemListStart
+            \resumeItem{\normalsize{Engineered a full-stack application architecture using Python, Vue.js, and REST APIs to orchestrate multi-user workflows, ensuring robust API functionality and reliable data flows.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Implemented rigorous software testing strategies and debugging processes for the agent-based execution engine, validating asynchronous processing and real-time status updates across complex investigation paths.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Designed scalable backend services for cross-session state management and evidence collection, applying code quality standards to support seamless coordination among multiple users and roles.}}
+      \vspace{-12px}
+      \resumeItemListEnd
+
+      \resumeItem{\normalsize{\textbf{SOCrates} -} \textit{(Python, Vue.js, OpenAI APIs, REST APIs)}}
+      \vspace{-4px}
+      \resumeItemListStart
+            \resumeItem{\normalsize{Developed a full-stack application utilizing Python, Vue.js, and REST APIs to establish stable integration paths between OpenAI services and internal tooling.}}
+      \vspace{-12px}
+            \resumeItem{\normalsize{Managed API versioning and dependency interoperability within automated investigation pipelines, ensuring consistent data enrichment and ticketing integrations across service boundaries.}}
+      \vspace{-12px}
+      \resumeItemListEnd
+    \resumeItemListEnd  
+   
+ \vspace{-12pt}
+%
+
+%-----------EDUCATION-----------
+\section{\color{airforceblue}EDUCATION}
+  \resumeSubHeadingListStart
+      \resumeSubheading
+            {Velammal Engineering College \textnormal{\small - CGPA: 9.18}}{Chennai}
+            {Bachelor of Engineering in Computer Science and Engineering}{2020 - 2024}
+      \vspace{-4pt}
+  \resumeSubHeadingListEnd
+  \vspace{-10pt}
+
+%-----------Certifications---------------
+% Static template content: the Resume model has no certifications field,
+% so the renderer never touches this section.
+\section{\color{airforceblue}CERTIFICATIONS}
+    
+  \resumeItemListStart
+    \resumeItem{\normalsize{ NPTEL certificate on Data Analysis and Algorithms using Python - Elite Silver}}
+      \vspace{-12px}
+    \vspace{-5pt}
+  \resumeItemListEnd 
+      
+\vspace{-8pt}
+
+%-----------EXTRACURRICULAR---------------
+      
+\vspace{-12pt}
+
+\end{document}

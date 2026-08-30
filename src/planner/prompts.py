@@ -256,17 +256,28 @@ def build_planning_prompt(
 #: state the exact ids each array may contain, computed from the resume, and put
 #: it last so it is the final thing read before generation.
 #:
-#: **Strict mode only, and that boundary is measured, not stylistic.** On the
-#: failing pairing, 4 trials per condition against one fixed JobAnalysis:
+#: **Originally strict-only, and that boundary was measured.** On the failing
+#: pairing, 4 trials per condition against one fixed JobAnalysis:
 #:
-#:     mode        without manifest   with manifest
+#:     mode        without manifest   with THIS manifest
 #:     STRICT           0/4               4/4
 #:     AGGRESSIVE       4/4               0/4
 #:
 #: Aggressive has to hedge every count with "plus one entry per GENERATE", which
 #: reintroduces the ambiguity the manifest exists to remove, and the model
-#: returned unbalanced JSON every time. Aggressive never exhibited the bleed, so
-#: it gets no manifest. Adding one there is a regression, not an improvement.
+#: returned unbalanced JSON every time.
+#:
+#: **That conclusion was over-generalised, and the fix is below.** The reading
+#: taken from it — "aggressive never exhibits the bleed, so it gets no
+#: manifest" — was true of the pairing measured and false in general: the first
+#: real end-to-end run found aggressive failing 0/4 on backend+backend with the
+#: same bleed. What the numbers actually show is narrower: *this* manifest is
+#: wrong for aggressive, because its exact counts leave nowhere to put a
+#: GENERATE entry. See ``_AGGRESSIVE_ENTRY_MANIFEST_TEMPLATE``.
+#:
+#: The general lesson: a mode boundary drawn from one resume/JD pairing is a
+#: hypothesis, not a result. Measure across pairings before concluding a mode
+#: is unaffected.
 #:
 #: A methodological note, because it nearly inverted this conclusion: an earlier
 #: A/B built its baseline by string-removing the manifest, which left one extra
@@ -283,6 +294,40 @@ category id may appear in it. Only KEEP or REWRITE are valid here.
 
 Each array uses only its own shape. Never carry the field names of one array \
 into another.
+"""
+
+#: The aggressive variant. Added 2026-08-29 after the first real end-to-end run
+#: showed the bleed *does* reach aggressive — on the backend pairing, 0/4,
+#: deterministic — falsifying the "aggressive never exhibited it" note above,
+#: which had only ever been measured on the cybersecurity pairing.
+#:
+#: Forcing the strict manifest on aggressive does stop the bleed, but fails a
+#: different way: "one entry per id, in this order" leaves nowhere to put a
+#: GENERATE entry, so the model attaches a real id to one and trips
+#: "GENERATE requires project_id to be null" (0/4).
+#:
+#: So the count must be open-ended for the two generatable arrays while staying
+#: exact for experiences. The earlier aggressive attempt hedged with a bare
+#: "plus one entry per GENERATE" and returned unbalanced JSON 4/4; this instead
+#: gives a positional instruction — list these ids in this order, *then* append
+#: — which is concrete about where a new entry goes rather than only about how
+#: many there may be.
+_AGGRESSIVE_ENTRY_MANIFEST_TEMPLATE = """\
+Entry manifest for THIS resume. Use these exact ids:
+- skills_plans: one entry for each of these ids, in this order: {skill_ids}. \
+After those, append one extra entry for each NEW category you invent, with \
+"category_id": null and action GENERATE.
+- experience_plans: EXACTLY {experience_count} entries, one per id, in this \
+order: {experience_ids}. No other id may appear in this array, and no project \
+or skill category id may appear in it. Only KEEP or REWRITE are valid here. \
+Never append to this array.
+- project_plans: one entry for each of these ids, in this order: {project_ids}. \
+After those, append one extra entry for each NEW project you invent, with \
+"project_id": null and action GENERATE.
+
+Each array uses only its own shape. Never carry the field names of one array \
+into another. In particular new_category_name belongs only to skills_plans, \
+and generation_brief only to project_plans.
 """
 
 
@@ -302,12 +347,12 @@ def _entry_manifest(resume: Resume, mode: PlanningMode) -> str:
     str
         The manifest block, ending in a blank line.
     """
-    if mode != PlanningMode.STRICT:
-        # Must be exactly empty: the template adds no whitespace around this
-        # slot, so aggressive prompts stay byte-identical to the pre-manifest
-        # ones. A single stray blank line changes greedy output — see above.
-        return ""
-    return _ENTRY_MANIFEST_TEMPLATE.format(
+    template = (
+        _ENTRY_MANIFEST_TEMPLATE
+        if mode == PlanningMode.STRICT
+        else _AGGRESSIVE_ENTRY_MANIFEST_TEMPLATE
+    )
+    return template.format(
         skill_ids=", ".join(category.id for category in resume.skills),
         experience_count=len(resume.experiences),
         experience_ids=", ".join(item.id for item in resume.experiences),

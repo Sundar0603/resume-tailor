@@ -16,6 +16,9 @@ dependencies = [
     "anthropic",
     "google-genai",
     "tomli; python_version < '3.11'",
+    # PDF geometry for the Quality Gate. The upper pin is load-bearing:
+    # releases from 20251227 declare requires-python >=3.10.
+    "pdfminer.six>=20231228,<20251227",
 ]
 
 [project.scripts]

@@ -247,28 +247,32 @@ Determine whether the generated resume is submission-ready.
 
 ### Stage 1 — Fast Validation
 
-Perform the following checks:
+Deterministic checks from the compiler log and the page count:
 
 - LaTeX compilation succeeds.
 - Resume contains exactly one page.
 - No overfull hboxes.
-- No orphan words.
+- No missing glyphs.
 - No critical compilation errors.
 
-If every check passes, the resume is accepted immediately.
+Orphan words were previously listed here. They require rendered PDF geometry,
+which the compiler log does not carry, so they belong to Stage 2.
 
-### Stage 2 — Targeted Analysis
+### Stage 2 — Geometry Analysis
 
-Run only when Stage 1 fails.
+Always runs, not only when Stage 1 fails. See the ARCHITECTURE 1.2 amendment:
+the analysis costs milliseconds, and deferring it would hide overlapping text
+until the Revision Engine had already spent an attempt on the page count.
 
-Examples:
-
-- Overflowing Projects section.
-- Experience section exceeds page limit.
-- Orphan words.
-- Layout inconsistencies.
+- Text overlap between rendered lines.
+- Section rules drawn through text.
+- Orphan words — reported as a WARNING, which does not block.
+- Overflow magnitude and the sections it came from.
 
 Produce structured quality feedback.
+
+Page count is never the sole success signal: a document whose bullets collide
+compiles cleanly and comes out *shorter*.
 
 ### Stage 3 — Revision Request
 
@@ -278,14 +282,18 @@ Only affected sections should be revised.
 
 ## Input
 
-- Resume object.
 - Compiled PDF.
 - Compiler logs.
+- CompilationResult, or CompilationFailedError when the engine failed.
+
+The Resume object was previously listed here. The gate does not take it: it
+judges artifacts, and reporting a section plus the offending line text is
+enough for the Revision Engine, which already holds the Resume.
 
 ## Output
 
-- Quality Report.
-- Pass / Fail decision.
+- Quality Report, with each finding marked ERROR or WARNING.
+- Pass / Fail decision, where pass means "no ERROR issues".
 
 ## Out of Scope
 

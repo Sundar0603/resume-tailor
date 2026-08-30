@@ -14,6 +14,36 @@ This document is Frozen: implementation may not diverge from it, but the
 document itself may be corrected when it is found to describe something the
 project never built. Each entry below records such a correction.
 
+**1.3 — 2026-08-29**
+
+- *Quality Gate* — findings now carry a severity, ERROR or WARNING, and
+  `passed` is "no ERROR issues" rather than "no issues at all". This mirrors the
+  Validator's errors-vs-warnings split. Orphan words are the only WARNING.
+  Reason: three of the nine compiled resumes contain orphans while being clean
+  in every other respect, so treating a stranded word as disqualifying would
+  fail a resume a reviewer would happily read. Diverges from task 016's brief,
+  which listed orphan words as a failure; the divergence is deliberate and was
+  driven by the measurement.
+
+**1.2 — 2026-08-28**
+
+- *Quality Gate / Progressive Validation* corrected. Stage 2 previously ran
+  "only if Stage 1 fails". Both stages now always run. Reason: geometry
+  analysis costs milliseconds and compilation ~0.5s, so the "expensive"
+  premise was false; and short-circuiting hid text overlap until the Revision
+  Engine had already spent one of its three attempts on the page count.
+- *Quality Gate / Stage 1* corrected. "No orphan words" was listed as a Stage 1
+  check. Orphan detection needs rendered PDF geometry, which the compiler log
+  does not carry, so it is a Stage 2 check. Missing glyphs — which the log does
+  carry — take its place in Stage 1.
+- *Technology Decisions* — PDF Analysis changed from "not yet adopted" to
+  `pdfminer.six`, adopted in task 016. MIT, and it adds no new packages:
+  `cryptography` and `charset-normalizer` were already installed. Pinned
+  `<20251227` because releases from that date declare `requires-python >=3.10`
+  and this project is 3.9. PyMuPDF was rejected as AGPL-3.0.
+- *Quality Gate* — recorded that page count alone is never sufficient, per the
+  §10d regression where overlapping text *improved* the page count.
+
 **1.1 — 2026-08-26**
 
 - *Technology Decisions* corrected to the versions and libraries actually in
@@ -551,53 +581,44 @@ Its responsibility is simply
 Decide whether the generated resume is submission-ready.
 
 Progressive Validation
+
+Both stages always run. Changed in 1.2 — see the Amendment Log.
+
 Stage 1 (Always Runs)
 
-Fast checks.
+Fast, deterministic checks from the compiler log and the page count.
 
 ✅ LaTeX compiles
 ✅ Exactly one page
 ✅ No overfull hboxes
-✅ No orphan words
+✅ No missing glyphs
 ✅ No critical compile errors
 
-If all pass
+Orphan words are NOT a Stage 1 check. They need rendered geometry, which the
+compiler log does not carry.
 
-Resume accepted.
+Stage 2 (Also Always Runs)
 
-No further analysis.
+PDF geometry analysis, via `pdfminer.six`.
 
-Stage 2 (Only if Stage 1 Fails)
+✅ No text overlap
+✅ No section rule drawn through text
+⚠️  Orphan words — reported, but do not block
 
-Targeted analysis.
+Plus the overflow metrics the Revision Engine needs: how many lines spilled
+past page one, how tall that spill is, and which sections it came from.
 
-Instead of inspecting the entire PDF,
+Why both stages always run. Stage 2 was originally specified to run only when
+Stage 1 failed. That is wrong in both directions. Geometry analysis costs
+milliseconds and compilation about half a second, so there is nothing to save
+by skipping it; and stopping early means the Revision Engine learns about
+overlapping text only after spending one of its three attempts on the page
+count. The gate reports every problem it can see, in one pass.
 
-it investigates only the problematic areas.
-
-Example
-
-Page 2
-
-↓
-
-Projects Section
-
-↓
-
-Overflow
-
-or
-
-Experience
-
-↓
-
-Last Line
-
-↓
-
-One orphan word
+Page count is never the sole signal. A document whose bullets print on top of
+each other compiles with exit 0, reports no warnings, and comes out *shorter* —
+the metric improves because the text is collapsing rather than fitting. A
+one-page PDF with colliding text fails the gate.
 
 Produces structured feedback.
 

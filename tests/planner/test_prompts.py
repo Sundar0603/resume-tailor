@@ -63,16 +63,32 @@ class TestBraceDoubling:
 
 class TestEntryManifest:
     """
-    The strict-mode entry manifest, and the whitespace boundary around it.
+    Both modes carry an entry manifest, and each carries its own.
 
-    Measured on cybersecurity_resume against the application-developer JD,
-    4 trials per condition against one fixed JobAnalysis:
+    Originally strict-only. Measured on cybersecurity_resume against the
+    application-developer JD, 4 trials per condition:
 
-        mode          without manifest   with manifest
+        mode          without manifest   with STRICT manifest
         STRICT             0/4               4/4
         AGGRESSIVE         4/4               0/4
 
-    Hence strict-only. See the comment above ``_ENTRY_MANIFEST_TEMPLATE``.
+    That reading — "aggressive needs no manifest" — was true of the pairing it
+    was measured on and false in general. The first real end-to-end run found
+    aggressive failing 0/4 on backend+backend with the same shape bleed, so it
+    now gets a manifest of its own. Re-measured across three pairings, before
+    and after, 4 trials each:
+
+        pairing        mode         before   after
+        backend        STRICT          4/4     4/4
+        backend        AGGRESSIVE      0/4     4/4
+        cyber+appdev   STRICT          4/4     4/4
+        cyber+appdev   AGGRESSIVE      4/4     4/4
+        fullstack      STRICT          4/4     4/4
+        fullstack      AGGRESSIVE      4/4     4/4
+
+    The strict prompt is byte-identical before and after; the aggressive one
+    differs by a pure insertion of its manifest. See the comments above
+    ``_ENTRY_MANIFEST_TEMPLATE`` and ``_AGGRESSIVE_ENTRY_MANIFEST_TEMPLATE``.
     """
 
     def test_strict_prompts_carry_the_manifest(self):
@@ -80,19 +96,48 @@ class TestEntryManifest:
         prompt = build_planning_prompt(resume, analysis, PlanningMode.STRICT)
         assert "Entry manifest for THIS resume" in prompt
 
-    def test_aggressive_prompts_do_not(self):
+    def test_aggressive_prompts_carry_one_too(self):
         resume, analysis = make_resume(), make_job_analysis()
         prompt = build_planning_prompt(resume, analysis, PlanningMode.AGGRESSIVE)
-        assert "Entry manifest" not in prompt
+        assert "Entry manifest for THIS resume" in prompt
 
-    def test_the_aggressive_prompt_has_no_stray_blank_line(self):
-        # The manifest slot must contribute exactly nothing in aggressive mode.
+    def test_the_aggressive_manifest_leaves_room_for_generate(self):
+        # Forcing the *strict* manifest on aggressive stops the bleed but fails
+        # a different way: "one entry per id, in this order" leaves nowhere to
+        # put a GENERATE entry, so the model attaches a real id to one and
+        # trips "GENERATE requires project_id to be null" (0/4). The aggressive
+        # manifest must say where a new entry goes.
+        resume, analysis = make_resume(), make_job_analysis()
+        prompt = build_planning_prompt(resume, analysis, PlanningMode.AGGRESSIVE)
+        assert '"project_id": null' in prompt
+        assert '"category_id": null' in prompt
+        assert "append" in prompt
+
+    def test_the_aggressive_manifest_still_pins_experiences(self):
+        # Experiences can never be added, removed or reordered, in any mode.
+        resume, analysis = make_resume(), make_job_analysis()
+        prompt = build_planning_prompt(resume, analysis, PlanningMode.AGGRESSIVE)
+        assert "EXACTLY {} entries".format(len(resume.experiences)) in prompt
+        assert "Never append to this array" in prompt
+
+    def test_neither_prompt_has_a_stray_blank_line(self):
         # One extra blank line changed greedy output enough to invert an A/B
         # result during development, so this is pinned rather than trusted.
         resume, analysis = make_resume(), make_job_analysis()
-        prompt = build_planning_prompt(resume, analysis, PlanningMode.AGGRESSIVE)
-        assert "</job_analysis>\n\nReturn ONLY" in prompt
-        assert "\n\n\nReturn ONLY" not in prompt
+        for mode in (PlanningMode.STRICT, PlanningMode.AGGRESSIVE):
+            prompt = build_planning_prompt(resume, analysis, mode)
+            assert "\n\n\nReturn ONLY" not in prompt
+            assert "\n\n\nEntry manifest" not in prompt
+
+    def test_the_aggressive_manifest_names_every_entity_id(self):
+        resume = make_resume()
+        prompt = build_planning_prompt(
+            resume, make_job_analysis(), PlanningMode.AGGRESSIVE
+        )
+        manifest = prompt[prompt.index("Entry manifest") :]
+        for group in (resume.skills, resume.experiences, resume.projects):
+            for entity in group:
+                assert entity.id in manifest
 
     def test_the_manifest_names_every_entity_id(self):
         resume = make_resume()

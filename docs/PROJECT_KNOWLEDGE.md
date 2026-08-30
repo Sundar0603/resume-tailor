@@ -3,8 +3,9 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 015 (PDF Compiler). Baseline: **902 tests
-passing** (825 after task 014); 19 of those need a TeX distribution and skip
+Status as of the end of task 016 (Quality Gate) plus the pipeline wiring.
+Baseline: **1026 tests
+passing** (902 after task 015); 31 of those need a TeX distribution and skip
 when none is on PATH. Update this file at the end of each task; do not rewrite
 it.
 
@@ -19,13 +20,47 @@ Markdown Resume
   → JD Analyzer          ✅ 006, 010
   → Resume Planner       ✅ 011
   → Resume Generator     ✅ 012
-  → Markdown Serializer  ✅ 013
-  → LaTeX Renderer       ✅ 014
+  → Markdown Serializer  ✅ 013   (side branch → generated.md)
+  → LaTeX Renderer       ✅ 014   (fed the Resume object, not Markdown)
   → pdflatex Compiler    ✅ 015
-  → Quality Gate         ⬜
-  → Revision Engine      ⬜
+  → Quality Gate         ✅ 016
+  → Revision Engine      ⬜ 017
   → Reporter             ⬜
 ```
+
+**The reference chain.** This is the current, canonical data path — keep it up
+to date, and run it on every change.
+
+```text
+Source Resume + Job Description + Mode
+      ↓
+JD Analyzer ──────────────→ JobAnalysis ─┐
+      ↓                                  │
+Resume Planner ──────────→ ResumePlan ───┤
+      ↓                                  │
+Resume Generator ←───────────────────────┘
+      ↓
+Resume Object ──────→ Markdown Serializer → generated.md   (side branch)
+      ↓
+LaTeX Renderer  →  resume.tex
+      ↓
+PDF Compiler  →  resume.pdf
+      ↓
+Quality Gate  →  QualityGateResult
+      ↓
+Revision / Shortening  (task 017, not built)
+```
+
+**The Markdown Serializer branches off the Resume Object; it is not a link in
+the path.** An earlier drawing placed it between the Resume Object and the
+LaTeX Renderer. That is not buildable: the Renderer consumes a `Resume`, so
+an in-path serializer means `serialize → parse`, which silently destroys the
+entity lineage the Revision Engine depends on. Measured, and pinned by a test —
+see §10g. The serializer still runs on every pass and still emits
+`generated.md`; it just does not feed the Renderer.
+
+`src/pipeline/` runs this chain end to end, and `tests/pipeline/` exercises it
+offline on every change.
 
 Supporting stages already built: provider config + keyring (007), five providers
 + factory (008), `resume-tailor doctor` (009), `resume-tailor analyze` (010),
@@ -474,6 +509,29 @@ re-running the experiment that produced them.
    only difference is the thing under test. And a prompt change must be measured
    in **every** mode it touches, not just the one being fixed.
 
+10. **A mode boundary drawn from one pairing is a hypothesis, not a result.**
+   The planner's entry manifest was made strict-only on measured evidence: on
+   the cybersecurity pairing it took strict 0/4 → 4/4 and aggressive 4/4 → 0/4.
+   The conclusion recorded from that — "aggressive never exhibits the shape
+   bleed" — was an over-read. The first real end-to-end run found aggressive
+   failing 0/4 on backend+backend with exactly that bleed.
+
+   What the numbers had actually shown was narrower: the *strict* manifest is
+   wrong for aggressive, because its exact counts leave nowhere to put a
+   GENERATE entry. An aggressive-shaped manifest fixes the bleed with no
+   regression anywhere (24/24 across three pairings, both modes).
+
+   This is lesson 8 one level up. That one says measure every *mode* a prompt
+   change touches; this adds: and every *pairing* you intend to generalise
+   over. Three resumes and three JDs is cheap — roughly 20 minutes of local
+   inference — against a mode being silently broken for months.
+
+   Corollary, from the same episode: when a fix makes a failing case pass,
+   check it did not do so by disabling the feature. The aggressive manifest
+   could have scored 4/4 by suppressing GENERATE entirely and quietly turning
+   aggressive into strict; it was only trustworthy once the plans were shown to
+   still contain GENERATE entries.
+
 9. **A rule enforced in one layer must be enforced in every layer that can
    breach it.** Strict mode's promise is "no new facts". The planner enforced
    it for `GENERATE` and the generator enforced it for prose, but
@@ -504,7 +562,8 @@ re-running the experiment that produced them.
   describe the Generator as `Resume + JDAnalysis + Mode → Resume` with no
   Planner stage.
 - **`docs/IMPLEMENTATION_GUIDE.md` is a stub** — eight bare headings.
-- **Not installed:** Rich, PyMuPDF, PyYAML.
+- **Not installed:** Rich, PyMuPDF, PyYAML. `pdfminer.six` **is** installed as
+  of task 016 (see §10f); PyMuPDF was evaluated and rejected as AGPL-3.0.
 
 ---
 
@@ -1036,13 +1095,555 @@ skipped without a TeX distribution.
 
 ---
 
+## 10f. Quality Gate (task 016)
+
+`src/quality/` — `exceptions.py`, `models.py`, `geometry.py`, `log_analysis.py`,
+`checks.py`, `quality_gate.py`, `__init__.py`. Its own package, like the
+compiler.
+
+```python
+QualityGate(extractor=None, overfull_tolerance_points=0.0)
+    .evaluate(pdf_path, latex_path, compiler_result) -> QualityGateResult
+    .evaluate_compilation_failure(error) -> QualityGateResult
+```
+
+No LLM, no config, no network, no writes, no mutation.
+
+**There are two entry points, and the second is not optional.** The Compiler
+*raises* on failure and `CompilationResult` has no `success` field, so a result
+object can only ever describe a compilation that worked. Without
+`evaluate_compilation_failure`, the `COMPILATION_FAILED` code would be
+unreachable outside its own unit test. It takes the `CompilationFailedError`,
+reads the preserved log, and opens no PDF — there is none.
+
+**Both stages always run**, and `ARCHITECTURE.md` was amended to 1.2 to say so.
+It previously specified Stage 2 as running only when Stage 1 failed, and
+`COMPONENT_SPECIFICATIONS.md` additionally listed orphan words as a Stage 1
+check — impossible, since the log carries no geometry. Geometry analysis costs
+milliseconds; short-circuiting would only hide overlap until the Revision
+Engine had spent one of three attempts on the page count.
+
+### The dependency, and why it is the smallest one
+
+**`pdfminer.six`**, pinned `>=20231228,<20251227`. MIT. It **adds no new
+packages**: `cryptography` (49.0.0) and `charset-normalizer` (3.4.9) were
+already installed. The upper pin is load-bearing — releases from **20251227**
+declare `requires-python >=3.10`, and this project is 3.9; pip resolves to
+20251107 today, but the pin makes that explicit rather than a future surprise.
+
+Nothing else was available: the venv had no PDF library, and `pdftotext`,
+`mutool`, `qpdf`, `gs` and `pdftk` are absent system-wide. TinyTeX ships none of
+them. PyMuPDF was rejected as AGPL-3.0, pdfplumber as a Pillow-laden layer over
+the same engine, pypdf because it has no line bboxes.
+
+### Two extraction passes, because the checks need opposite things
+
+- **Analysed** (`extract_pages`, default `LAParams`) — line grouping and real
+  spaces. Orphans, section attribution, overflow.
+- **Raw** (`PDFPageAggregator(laparams=None)` driven directly) — unanalysed
+  `LTChar`. Overlap only.
+
+**Layout analysis is what hides superimposed text**: two colliding rows get
+merged into one line, and the merged boxes then never intersect. Measured on
+the fixture, the analysed pass loses all the collisions. Note
+`extract_pages(..., laparams=None)` does **not** give a raw pass — pdfminer
+substitutes a default `LAParams()` when it is `None`, so the aggregator has to
+be driven by hand.
+
+Three traps in the raw pass: there are **no space glyphs** (TeX kerns via `TJ`,
+so a heading extracts as `TECHNICALSKILLS` and must be compared space-stripped);
+the only font-size-independent baseline is `LTChar.matrix[5]`, which is
+undocumented API and is therefore pinned by a test asserting the ~13.55pt body
+leading; and pdfminer logs `CropBox missing` at WARNING, silenced on its own
+logger rather than the root.
+
+### Thresholds were measured, not chosen
+
+Calibrated against the nine compiled resumes in `output/compile/` (all
+known-good) and `tests/fixtures/latex/overlapping_bullets.tex`, which re-adds
+`\vspace{-12px}` after every bullet and reproduces §10d exactly: **1 page, 0
+overfull boxes, text colliding.**
+
+| Constant | Value | Measured separation |
+|---|---|---|
+| `OVERLAP_TOLERANCE_POINTS` | 0.5 | **0 overlapping pairs across all nine**; fixture reports collisions at 1.79, 3.79, 4.69pt. Any value in (0, 1.79) works. |
+| `ORPHAN_MAX_WORDS` | 1 | 5 genuine orphans across the nine. Rejects the 2-word skills line `Databases: MySQL`. |
+| `ORPHAN_PRECEDING_FILL_RATIO` | 0.85 | Real orphans sit at 0.904–0.932. |
+
+**The orphan fill guard is honest but not load-bearing.** No single-word final
+line in the corpus had a low preceding fill, so the guard defends against a
+case the sample does not contain. It must stay well under 0.904 because the
+template sets `\raggedright`: an unjustified line can legitimately stop a whole
+word short, around 0.87.
+
+**Overlap detection is not the same-block rule the plan first proposed.** The
+real collisions turned out to be *cross-block* — a bullet's last line hitting
+the next section heading — so restricting comparison to one block would have
+missed all of them. The rule is: vertically adjacent rows whose ink overlaps by
+more than the tolerance **and** whose horizontal ranges intersect. Requiring
+both axes is what keeps `\resumeSubheading`'s right-aligned dates (same
+baseline, disjoint columns) from registering.
+
+### Section attribution anchors on rules, not heading text
+
+Each `\section` emits exactly one full-width `\titlerule`, so **the rules are
+the section boundaries**; heading text only *names* them. Narrow rects are link
+underlines and are filtered by width. A heading sits *above* its own rule, so it
+is named directly — otherwise the marker walk files every heading under the
+previous section, which showed up as `PROJECTS` wrongly reported as overflowing.
+
+The same rules give the text-column width (553.7pt), which is more robust than
+the widest-line extent: on a page where every line is short, the extent makes
+each line look completely full and silently disables the orphan fill guard.
+
+### Metrics exist so the Revision Engine can act
+
+`page_count`, `overfull_hbox_count`, `max_overfull_points`,
+`missing_glyph_count`, `overlap_count`, `orphan_word_count`,
+`rule_collision_count`, `total_text_lines`, `overflow_line_count`,
+`overflow_height_points`, `overflowing_sections`, `lines_per_section`.
+
+**No `duration_seconds`**, unlike `CompilationResult` — determinism requires
+`first == second`, and a wall-clock field breaks it on every run.
+
+**Measured overflow across the nine** (page 1 holds ~70 lines):
+
+| | page 2 lines | |
+|---|---|---|
+| seven of nine | 3–9 | ≈2–4 bullets |
+| backend_aggressive | 26 | ≈10 bullets |
+| cybersecurity_aggressive | 15 | ≈6 bullets |
+
+So trimming is a small job for most resumes. Worth knowing before
+over-engineering the Revision Engine.
+
+### The trim loop was prototyped, and it works
+
+Driven end to end against real artifacts: compile → evaluate → drop the last
+bullet → repeat. `backend_strict` reaches one page and **passes** after two
+bullets and three compiles (~1.5s, zero LLM calls). `cybersecurity_strict` does
+the same and passes with its three orphan warnings still reported.
+
+**Two constraints the prototype discovered, both needed by task 017:**
+
+- **Never remove an entity's last bullet.** The first attempt broke compilation
+  outright: emptying an `itemize` is a LaTeX error, exactly as §10d's renderer
+  notes warn. The floor is not only the Validator's minimums.
+- **Trimming is coarser than one line per bullet.** Spill went 7 → 7 → 0:
+  removing one bullet changed nothing, the next cleared the page. The
+  `\resumeSubHeadingListStart` blocks move as a unit rather than reflowing line
+  by line. Another reason the recompile loop beats predicting.
+
+### Shortening probably needs no LLM at all
+
+§10b ordered everything trimmable strongest-first *for this purpose*, so "drop
+the last bullet" is well defined; at ~0.5s per compile, a trim → recompile →
+re-gate loop converges in seconds with zero LLM calls, leaving the 3-revision
+budget for real quality problems. Two limits: the Validator's floor (exactly 2
+experiences, ≥2 projects, ≥1 skill category, ≥1 education, non-empty highlights),
+and the **Summary, which is prose with no last element** — a deterministic
+trimmer cannot compress it, only delete it wholesale.
+
+**Resolved (2026-08-30): the revision path needs no LLM at all.** The summary is
+sized correctly at *generation* time instead — 35-45 words, anchors mandatory
+(`SUMMARY_TARGET_MIN_WORDS`/`MAX_WORDS`) — which removes the one job that would
+have needed a model during revision. Measured: the deterministic trim loop
+converges on all three worst live runs — backend_aggressive in 8 bullets,
+fullstack_aggressive in 7, cybersecurity_strict in 6 — reaching one page and
+passing the gate with zero LLM calls.
+
+**Revision order is not deletion order.** Summary is `revision_order = 1`, but a
+deterministic trimmer cannot compress prose, only delete it, which is the worst
+trade available. For deterministic trimming the order is Projects → Skills →
+Experience.
+
+**Retention floors, set by the user 2026-08-30.** Nothing may be trimmed below
+these; they sit *above* the Validator's own minimums, which remain the hard
+backstop:
+
+| unit | floor |
+|---|---|
+| bullets per project | 3 |
+| bullets, full-time experience | 5 |
+| bullets, internship | 3 |
+| skill categories | 5 |
+| skills within a category | 2 |
+
+**Failure is not an option.** The Revision Engine must always deliver a one-page
+resume and must return the *changed* resume, never the original unchanged. This
+overrides the earlier recommendation to hand back the original on
+non-convergence.
+
+**Artifacts.** The Revision Engine owns attempt numbering and layout — it owns
+the loop, and the Compiler was built so "the caller owns attempt numbering".
+Persist checkpoints, not every iteration: `output/runs/<name>/attempt_1/`,
+`final/`, plus a `revision_trail.json` recording each removal with the resulting
+page count and spill. Eight intermediate PDFs nobody opens is clutter; the trail
+is what gets read.
+
+### The floors and "always one page" cannot both hold by removing bullets
+
+Measured across the six live runs, counting everything the floors allow —
+bullets above floor, whole projects removable to the Validator's minimum,
+surplus skill categories, and skills trimmed to 2 per category:
+
+| run | spill (lines) | freeable | verdict |
+|---|---|---|---|
+| backend_strict | 7 | ~3 | **short by 4** |
+| backend_aggressive | 18 | ~15 | **short by 3** |
+| cybersecurity_strict | 13 | ~13 | just enough |
+| cybersecurity_aggressive | 16 | ~20 | ok |
+| fullstack_strict | 0 | — | already passes |
+| fullstack_aggressive | 16 | ~14 | **short by 2** |
+
+`backend_strict` is the binding case. Note its generated projects hold
+`[3, 2]` bullets — one is **already below** the floor of 3, so the floor is not
+satisfied by current output, let alone after trimming.
+
+Removing whole skill categories barely helps: a category renders as one row, so
+the section is 6-10 lines for 5-8 categories and trimming every category to 2
+skills saves only 1-2 lines.
+
+### Bullet length: implemented 2026-08-30, and what it took
+
+Three rules added to **both** the experience and project templates:
+
+```
+- Keep each highlight to 15 words or fewer. At most two highlights in your whole
+  answer may exceed that, and only where the content genuinely needs it.
+- Cut filler, never facts. Numbers, technologies, product names and concrete
+  outcomes always stay; phrases like "ensuring seamless integration across
+  enterprise applications" go.
+- Shorter highlights are not licence to write more of them.
+```
+
+**A soft rule does not work, and the reason is the binary threshold.** The first
+attempt said "aim for about 15 words; a few may run longer." The model read that
+as permission: 13-20 of every 15-21 bullets still exceeded 15 words. Medians fell
+from 21-26 to 17-22 — genuinely shorter prose that bought **zero lines**, because
+anything over ~15 words wraps to two lines regardless. `fullstack_strict`
+actually *regressed* from 1 page to 2: its bullets shrank from 24 to 17 words
+(still two lines each) while gaining one more bullet, for a net +2 lines.
+
+Making the allowance **countable** ("at most two in your whole answer") is what
+worked. Note it is not obeyed literally — 9-14 bullets still exceed 15 words —
+but it moves medians to 16-19 and that is where the lines come from.
+
+**Median word count is the misleading metric here.** The one that predicts pages
+is *how many bullets cross the one-line threshold*.
+
+Results across the six runs:
+
+| run | median words | bullets | spill | pages |
+|---|---|---|---|---|
+| backend_strict | 26 → 18 | 14 → 14 | 7 → **0** | 2 → **1** ✓ |
+| backend_aggressive | 24 → 16 | 19 → 17 | 18 → 13 | 2 |
+| cybersecurity_strict | 21 → 17 | 19 → 17 | 13 → 5 | 2 |
+| cybersecurity_aggressive | 24 → 16 | 20 → 20 | 16 → 16 | 2 |
+| fullstack_strict | 24 → 16 | 14 → 14 | 0 → 0 | **1** ✓ |
+| fullstack_aggressive | 22 → 19 | 19 → 15 | 16 → 7 | 2 |
+
+**Quantified outcomes survived** — counts went *up* in several runs (13 in
+cybersecurity_aggressive), so the "cut filler, never facts" rule held.
+
+**This makes the floors feasible.** Re-running the budget check with the shorter
+bullets, 5 of 6 runs can now reach one page within the user's retention floors,
+against 2 of 6 before. Only `backend_aggressive` remains short, by ~4 lines.
+
+### The resolution: cut bullet *length*, not bullet *count*
+
+Measured on a real PDF: **a rendered line holds 14-15 words** (108-114 characters
+at 11pt in the 553.7pt column). Generated bullets run a **median of 23 words**, so
+essentially every bullet wraps to two lines.
+
+A resume carries 14-20 bullets. Bringing them under ~14 words makes each a single
+line, saving **14-20 lines** — more than the entire 7-18 line spill, and without
+deleting any content.
+
+So both the floors and the one-page guarantee are satisfiable by shortening
+bullets at *generation* time, exactly as the summary was retargeted, rather than
+deleting more at revision time. It also keeps the revision path LLM-free.
+
+**Carry the summary lesson across:** the band matters more than the target. A
+10-word band (35-45) made the model abandon JSON entirely; a 20-word band gave
+the length actually wanted. Any bullet budget must be a range with room in it,
+measured in both modes across all three pairings before it ships.
+
+**Which experience to trim — DECIDED with the user, 2026-08-30: intern bullets
+first, then full-time.** Keyed on `Experience.employment_type`, which every
+resume carries (`exp_001` Full Time, `exp_002` Internship in all three) and
+which the renderer deliberately drops — so it is available at runtime with **no
+coupling to the Planner**, unlike `ExperiencePlan.priority`. This supersedes the
+earlier "oldest first" suggestion: same outcome on today's resumes, but semantic
+rather than positional, so it survives a resume listing jobs in another order.
+
+**Stated invariant: an internship section is always present.** Confirmed by the
+user, not inferred. No fallback is built for its absence — an untestable branch
+is worse than a documented assumption — but the trimmer should fail loudly
+rather than silently mis-order if it ever stops holding.
+
+**It is a priority, not a shield.** The internship carries only 3 bullets and a
+list cannot be emptied, so intern-first yields **at most 2 bullets** while
+convergence needs 6-8. Projects, skills and full-time will always be reached.
+
+### Severity: not every finding blocks
+
+`QualityIssue` carries a `severity`, and `passed` is **"no ERROR issues"**, not
+"no issues" — the Validator's errors-vs-warnings split. `SEVERITY_BY_CODE` is
+the single mapping; `result.errors` and `result.warnings` are convenience views.
+
+**`ORPHAN_WORD` is the only WARNING, and this diverges from the task doc on
+purpose.** The brief lists orphan words as a failure. Measured: three of the
+nine known-good resumes contain orphans while being clean in every other
+respect. `cybersecurity_strict`, trimmed to one page, is otherwise perfect and
+carries `'60%.'`, `'validation.'` and `'verification.'` — failing it on those
+would be wrong, so they are reported and do not block. Everything else blocks:
+an overfull hbox puts text in the margin, a missing glyph means content was
+silently dropped, and overlap or a rule through text is a broken page.
+
+Issues sort errors first, so the blocking problem is the first thing read.
+
+### Error versus failure
+
+```
+QualityGateError
+├─ GeometryUnavailableError   # pdfminer not importable
+├─ PDFUnreadableError         # missing, not a PDF, no pages, unparseable
+└─ QualityAnalysisError       # log/PDF page counts disagree
+```
+
+A failure is `passed=False`; an error raises. An analyzer failure is **never**
+reported as a pass. Note the Compiler deliberately accepts a degenerate
+`%PDF-1.4\n` with no pages ("the compiler is not the Quality Gate and must not
+care") — judging that file is this package's job, and the honest verdict is
+`PDFUnreadableError`.
+
+### Testing
+
+`tests/quality/` — 110 tests. `conftest.py` supplies `FakeExtractor`,
+`FailingExtractor` and geometry builders, so **every Stage 2 rule is testable
+with no PDF, no pdflatex and no pdfminer** — the same seam idea as `FakeRunner`.
+Geometry is built in PDF user space (y increases upward), which is easy to get
+backwards.
+
+`test_quality_gate_integration.py` (12 tests, `skipif` on pdflatex) carries the
+mandatory regression: the broken fixture is **1 page with 0 overfull boxes and
+still fails**, on `TEXT_OVERLAP`. It also re-runs the nine known-good PDFs as a
+standing false-positive check.
+
+---
+
+## 10g. Pipeline wiring (chain connection)
+
+`src/pipeline/` — `exceptions.py`, `models.py`, `pipeline.py`, `__init__.py`.
+
+```python
+ResumePipeline(provider, template_directory="templates",
+               quality_gate=None, compiler=None)
+    .run(source_resume, job_description, mode, output_directory, job_name)
+        -> PipelineResult
+    .run_from_file(resume_path, job_description_path, ...)
+```
+
+It holds **no logic of its own** — every stage is already tested in isolation.
+It exists so the *seams* are tested: whether one stage's output is actually
+accepted by the next. That is the break that survives a thousand green unit
+tests.
+
+`PipelineResult` keeps **every** intermediate artifact (analysis, plan,
+generated resume, markdown, latex, compilation, quality). When a resume comes
+out wrong the question is always *which stage did it*, and a result carrying
+only the final PDF makes that unanswerable.
+
+**One provider serves every stage**, so a run cannot silently mix models.
+
+**Stage exceptions are not wrapped.** A `PlannerError` reaching the caller
+unchanged is more useful than a generic "pipeline failed", and each tree is
+already documented. The single exception it *handles* is
+`CompilationFailedError` — the Quality Gate has a verdict for that case, so the
+run ends in a judgement rather than a traceback, with `compilation=None`.
+
+### Why the Markdown Serializer branches instead of chaining
+
+An earlier version of the chain drew the Markdown Serializer **between** the
+Resume Object and the LaTeX Renderer. **It cannot sit there.**
+`LatexRenderer.render` takes a `Resume`, not Markdown, so putting it in the data
+path means `serialize → parse`, and that round trip is lossy by construction
+(§10c). The chain was corrected; this records why, so it is not re-drawn the
+old way later.
+
+Measured, not assumed:
+
+```text
+before round-trip: [('proj_007', 'GENERATED'), ('proj_002', 'CANONICAL')]
+after  round-trip: [('proj_001', 'CANONICAL'), ('proj_002', 'CANONICAL')]
+```
+
+`source=GENERATED` has no Markdown representation, and ids are renumbered
+positionally on parse. That lineage is exactly what the Revision Engine uses to
+decide what it may touch — an invented project may be dropped, a canonical one
+may not — so the serializer runs as a **side branch** emitting `generated.md` as
+an artifact, and the Renderer is fed the Resume object.
+
+Pinned by `TestTheSerializerIsASideBranch`, so nobody "simplifies" the pipeline
+by routing through Markdown later.
+
+### Live baseline: all six runs, both modes, all three resumes
+
+Measured 2026-08-30 on `qwen3.6:latest`, after the aggressive-manifest fix and
+the summary retarget. Full chain each time. Artifacts under
+`output/runs/<resume>_<mode>/`.
+
+| run | pass | pages | overfull | glyphs | overlap | orphans | lines | spill |
+|---|---|---|---|---|---|---|---|---|
+| backend_strict | ✗ | 2 | 0 | 0 | 0 | — | 64 | 7 |
+| backend_aggressive | ✗ | 2 | 0 | 0 | 0 | — | 74 | 18 |
+| cybersecurity_strict | ✗ | 2 | 0 | 0 | 0 | — | 69 | 13 |
+| cybersecurity_aggressive | ✗ | 2 | 0 | 0 | 0 | — | 72 | 16 |
+| fullstack_strict | **✓** | **1** | 0 | 0 | 0 | — | 59 | 0 |
+| fullstack_aggressive | ✗ | 2 | 0 | 0 | 0 | — | 72 | 16 |
+
+Wall clock 65-79s, five LLM calls each. Zero overfull boxes, zero missing
+glyphs, zero overlaps throughout.
+
+**Effect of the summary retarget** (band 20-120 → 35-55), same six runs before
+and after:
+
+| run | summary words | summary lines | total lines | spill |
+|---|---|---|---|---|
+| backend_strict | 66 → 47 | 6 → 5 | 65 → 64 | 11 → **7** |
+| backend_aggressive | 59 → 36 | 6 → 4 | 76 → 74 | 20 → **18** |
+| cybersecurity_strict | 71 → 40 | 7 → 4 | 72 → 69 | 16 → **13** |
+| cybersecurity_aggressive | 55 → 50 | 6 → 5 | 73 → 72 | 18 → **16** |
+| fullstack_strict | 52 → 50 | 5 → 4 | 60 → 59 | 0 → 0 |
+| fullstack_aggressive | 60 → 43 | 5 → 4 | 73 → 72 | 18 → **16** |
+
+Summaries now land at 36-50 words against 52-71 before, and spill drops 2-4
+lines per run. Real but modest — it closes roughly a fifth of the gap, which
+matches the estimate. The Revision Engine still does the bulk of the work.
+
+**One anchor loss, reported not silent.** `fullstack_aggressive` swapped the
+source's named technologies (Java, Spring Boot, Vue.js, Redis, MySQL) for the
+job's (Python, FastAPI, LLM Integration). `_report_lost_anchors` caught it and
+it surfaced on `generator_discarded` — which is the designed behaviour, since
+prose judgement is not a correctness rule and there is no safe way to graft a
+fact back into a sentence. Whether it is *caused* by the shorter budget cannot
+be established: the pre-change artifacts for that run were overwritten. Note
+also that a false alarm looks similar — cybersecurity's summaries carry no years
+of experience because the **source** has none, not because anything was lost.
+
+**Page-1 capacity is ~70 text lines.** That is what the Revision Engine trims
+toward; the spill column is how far each run has to come down.
+
+### Soft failures must be captured, or they vanish
+
+`PipelineResult` carries `planner_discarded`, `generator_discarded` and
+`generator_warnings`. Both stages record these on **themselves** and reset them
+on the next call, so a pipeline that does not copy them out loses them
+silently — which is exactly what the first live run showed. They are the only
+record that the planner dropped a removal naming an absent skill, or that the
+generator cancelled a lopsided trade, dropped an emptied category, or wrote a
+summary that lost its anchors. None of that is visible in the finished resume.
+
+### Testing
+
+`tests/pipeline/` — 14 tests, offline. `conftest.py` supplies `ScriptedProvider`,
+a hand-written `LLMProvider` subclass that dispatches on a marker in the prompt
+and returns a canned, schema-valid reply for each of the five calls a run makes.
+Replies are **derived from the source resume**, not hardcoded, so they cannot
+drift out of sync with the fixtures.
+
+**Trap, already hit:** the obvious markers `"experiences": [` and
+`"projects": [` both appear in the *resume context embedded in every generator
+prompt*, so dispatching on them silently routes the projects call to the
+experiences handler. The markers must come from each prompt's response-schema
+block (`"experience_id": "<the id given in the plan>"` and
+`"project_id": "<the id given in the plan, or null`).
+
+Confirmed by the chain test, matching §10b: **an all-KEEP plan makes exactly two
+LLM calls** (analyze, plan) and none to the generator; a rewriting plan makes
+five.
+
+`scripts/live_run.py` is the real thing: one resume, one JD, real LLM calls,
+dumping every stage to `output/runs/<name>/` as numbered files
+(`00_source_resume.json` … `10_run_summary.md`). Use it to inspect a hand-off.
+
+`verify_pipeline.py` is the lighter live counterpart, not collected by pytest. §9 lesson
+6 is why it exists — the planner once shipped with 318 green tests while every
+real invocation failed. The offline test proves the stages fit together; only
+the live one proves the chain survives a real model's output.
+
+---
+
 ## 11. Known open items
+
+- **FIXED: AGGRESSIVE mode could not plan the backend pairing (0/4).**
+  Found by the first real end-to-end run (2026-08-29) against
+  `content/backend_resume.md` + `tests/fixtures/job_descriptions/backend.md` on
+  `qwen3.6:latest`, and fixed the same day with an aggressive-specific entry
+  manifest. The planner decodes greedily, so the failure was deterministic, not
+  flaky.
+
+  **It falsified a recorded claim.** `src/planner/prompts.py` stated
+  "Aggressive never exhibited the bleed, so it gets no manifest. Adding one
+  there is a regression." That over-read its own data: the A/B behind it used
+  only the cybersecurity pairing, and what the numbers actually showed was
+  narrower — the *strict* manifest is wrong for aggressive, because its exact
+  counts leave nowhere to put a GENERATE entry.
+
+  Two distinct failures, both measured on the backend pairing, 4 trials each:
+
+  | condition | result | failure |
+  |---|---|---|
+  | no manifest (as shipped) | 0/4 | `project_plans[2].new_category_name` — the *skills* shape bleeding into a project entry |
+  | strict manifest forced on | 0/4 | `project_plans[1]` — `GENERATE requires project_id to be null` |
+
+  The fix is `_AGGRESSIVE_ENTRY_MANIFEST_TEMPLATE`: pin the ids *and* say where
+  a new entry goes — "one entry for each of these ids, in this order; after
+  those, append one extra entry for each NEW one, with `project_id: null`".
+  Positional, not a bare count hedge; the earlier "plus one entry per GENERATE"
+  wording returned unbalanced JSON 4/4. It also names which field belongs to
+  which array, which is what stops the bleed.
+
+  Re-measured across three pairings, before and after, 4 trials each:
+
+  | pairing | mode | before | after |
+  |---|---|---|---|
+  | backend | STRICT | 4/4 | 4/4 |
+  | backend | AGGRESSIVE | **0/4** | **4/4** |
+  | cyber+appdev | STRICT | 4/4 | 4/4 |
+  | cyber+appdev | AGGRESSIVE | 4/4 | 4/4 |
+  | fullstack | STRICT | 4/4 | 4/4 |
+  | fullstack | AGGRESSIVE | 4/4 | 4/4 |
+
+  Guards: the STRICT prompt is **byte-identical** before and after (diffed
+  against `git HEAD`), so strict cannot have regressed; the aggressive diff is a
+  pure insertion. And GENERATE still works — backend plans 5 skills into 7
+  entries (2 GENERATE) and 2 projects into 3, with `experience_plans` still
+  pinned at exactly 2. A manifest that silently suppressed GENERATE would have
+  scored 4/4 while turning aggressive into strict.
+
+  **The lesson, which is the part worth keeping: a mode boundary drawn from one
+  resume/JD pairing is a hypothesis, not a result.** Measure across pairings
+  before concluding a mode is unaffected. This is §9 lesson 8 one level up — it
+  says measure every mode a prompt change touches; this adds *and every pairing
+  you would generalise over*.
 
 - **`src/cli/_common.py` is not extracted.** `analyze.py` and `plan.py` already
   duplicate ~60 lines of provider bootstrap + error ladder. A third CLI command
   should trigger the extraction.
 - **No bullet-level targeting in the plan.** Plan models address whole entities; there is no
-  `highlight_indices: List[int]`. The Revision Engine may need it.
+  `highlight_indices: List[int]`. The Revision Engine may need it — though §10f
+  argues it mostly does not: with a 0.5s recompile the trimmer needs an *order*
+  over removable content, not an estimate of what each bullet costs.
+
+- **DECIDED: which experience to trim first.** Intern bullets, then full-time,
+  keyed on `employment_type`. An internship is a stated invariant. See §10f.
+
+- **Nothing persists the quality report.** `ARCHITECTURE.md` describes
+  `attempt_N_report.json` in the attempt directory. The gate deliberately
+  writes nothing — the caller owns the attempt directory, exactly as the
+  compiler owns `job_name` but not attempt numbering.
 - **`backlog.txt`** holds three "Validation v2" test-coverage ideas.
 - **Vocabulary control covers fields, not prose — accepted.** `technologies`
   and `domains` are filtered against the vocabulary; the words *inside* a
@@ -1086,11 +1687,12 @@ skipped without a TeX distribution.
   `docs/COMPONENT_SPECIFICATIONS.md` has not been re-checked against the code,
   and `docs/IMPLEMENTATION_GUIDE.md` remains a stub.
 
-- **The compiler cannot tell a good PDF from a bad one, by design.** It answers
-  only "did the engine produce a readable PDF". Every one of the §10d failure
-  modes — overlapping bullets, two pages, overfull boxes, dropped glyphs —
-  compiles with exit 0 and passes every check the compiler makes. The log it
-  preserves is what the Quality Gate reads to find them.
+- **FIXED: the compiler cannot tell a good PDF from a bad one, by design.** It
+  answers only "did the engine produce a readable PDF". Every one of the §10d
+  failure modes — overlapping bullets, two pages, overfull boxes, dropped
+  glyphs — compiles with exit 0 and passes every check the compiler makes. The
+  Quality Gate (§10f) now catches all four: the log gives it overfull boxes and
+  missing glyphs, the PDF gives it overlap and page count.
 
 - **Weak-term filtering is conservative on purpose.** `src/vocabulary.py`
   spares words that could anchor a real domain or skill, so vague entries
@@ -1107,39 +1709,41 @@ skipped without a TeX distribution.
   Compilation itself turns out to be cheap — **~0.5 s per resume**, so four
   attempts cost about 2 s of that 110 s. The budget pressure is all in the LLM
   calls.
+- **There is now an end-to-end chain, but still no CLI.** `src/pipeline/`
+  connects analyze → plan → generate → serialize → render → compile → judge,
+  and `tests/pipeline/` runs it offline on every change. What is still missing
+  is a *command*: no `resume-tailor` subcommand drives it, so the entry point
+  is `ResumePipeline` in Python or `tests/pipeline/verify_pipeline.py`. That
+  command is what should trigger the `src/cli/_common.py` extraction.
+
 - **`resume-tailor generate` does not exist.** The CLI was out of scope for
   task 012; `tests/generator/verify_generation.py` is the only way to drive the
   generator live. That command should also trigger the `src/cli/_common.py`
   extraction. The serializer is what it will write its output with.
-- **Nothing writes `generated.md` yet.** Task 013 built the serializer but no
-  caller. `LatexRenderer.render_to_file` (task 014) and `PDFCompiler.compile`
+- **FIXED: nothing wrote `generated.md`.** `ResumePipeline` now does, as a side
+  branch. Task 013 built the serializer but no caller. `LatexRenderer.render_to_file` (task 014) and `PDFCompiler.compile`
   (task 015) are the only writers so far, and only the verify scripts call them
   — there is still no CLI path from a job description to a file on disk.
   `resume-tailor doctor` gained a LaTeX *check* in task 015 but no command
   produces a PDF.
-- **Everything overflows one page, in both modes.** Re-measured in task 015
-  through `PDFCompiler` over all six tailored `.tex` in `output/tex/`, plus the
-  three canonical resumes: **all nine run to two pages**, with zero
-  overfull/underfull boxes and zero missing glyphs.
-
-  This is a correction. §11 previously recorded "four run to two pages, only
-  `fullstack_strict` fits one". `fullstack_strict` now measures **2 pages**
-  (`Output written on fullstack_strict.pdf (2 pages, 61731 bytes)`). Those
-  files are gitignored, so whether the earlier note was wrong or the `.tex` was
-  regenerated since cannot be recovered from history. The measured number is
-  two.
+- **Everything overflows one page, in both modes**, but by less than it sounds.
+  Re-measured in task 016 through the Quality Gate's own extractor: page 1
+  holds ~70 text lines, and **seven of the nine compiled resumes spill only 3–9
+  lines onto page 2** (≈2–4 bullets). The two exceptions are
+  `backend_aggressive` at 26 lines and `cybersecurity_aggressive` at 15. All
+  nine still report zero overfull boxes, zero missing glyphs and zero text
+  overlap.
 
   Strict mode overflows too, so this is not an aggressive-mode problem — the
   *source* resumes already need hand-tuning to fit, and the generator only
   grows them.
 
-  (An earlier version of this note claimed four of five fit on one page. Those
-  measurements were taken while bullets were overlapping — see §10d. Page counts
-  from before that fix are all invalid.)
+  (Earlier versions of this note recorded page counts taken while bullets were
+  overlapping — see §10d. Those are all invalid. The task 015 correction, "all
+  nine run to two pages", still holds; task 016 adds *how far* over.)
 
-  So the Quality Gate's trimming is not an edge case for aggressive runs; it is
-  on the critical path for essentially every resume. Worth knowing before
-  designing it: it needs to remove real content, not just tighten spacing.
+  So trimming is on the critical path for essentially every resume, but it is a
+  small job for most of them. §10f records why it likely needs no LLM.
 
 - **FIXED: the strict-mode shape bleed on cybersecurity_resume.** It was §9
   lesson 2 one array further on — the model duplicated the *projects* into

@@ -10,6 +10,12 @@ from src.generator import (
     build_projects_prompt,
     build_summary_prompt,
 )
+from src.generator.prompts import (
+    SUMMARY_MAX_WORDS,
+    SUMMARY_MIN_WORDS,
+    SUMMARY_TARGET_MAX_WORDS,
+    SUMMARY_TARGET_MIN_WORDS,
+)
 from src.planner.models import PlanningMode
 
 from .conftest import make_job_analysis, make_plan, make_resume
@@ -76,9 +82,39 @@ class TestModeRules:
 
 
 class TestBudgets:
-    def test_summary_states_the_word_budget(self):
+    def test_summary_states_the_tight_word_budget(self):
+        # 35-55, not the validator's 20-120 sanity bounds. The two numbers do
+        # different jobs: the validator catches a summary that collapsed or ran
+        # away, the prompt sets what the generator actually writes to.
         prompt = _summary_prompt()
-        assert "20 to 120 words" in prompt
+        assert "35 to 55 words" in prompt
+
+    def test_the_summary_band_is_wide_enough_to_answer(self):
+        # A 10-word band (35-45) made qwen3.6 abandon JSON entirely, 0/4.
+        # 35-55 returns JSON 4/4 and still lands at 42-43 words. The band is
+        # what the model is told; it is not the output length.
+        assert SUMMARY_TARGET_MAX_WORDS - SUMMARY_TARGET_MIN_WORDS >= 20
+
+    def test_the_summary_budget_is_tighter_than_the_validator_bounds(self):
+        assert SUMMARY_MIN_WORDS < SUMMARY_TARGET_MIN_WORDS
+        assert SUMMARY_TARGET_MAX_WORDS < SUMMARY_MAX_WORDS
+
+    def test_the_summary_prompt_still_demands_the_anchors(self):
+        # The tight budget must not be satisfied by dropping the employer, the
+        # years or the technologies. This rule predates the budget change and
+        # carries the requirement on its own -- adding extra prose alongside it
+        # pushed the model out of JSON mode entirely, so the wording here is
+        # deliberately the original.
+        prompt = _summary_prompt()
+        assert "the employer, the years of experience, and the named technologies" in prompt
+
+    def test_the_summary_prompt_carries_no_extra_prose_rules(self):
+        # Regression guard. Two sentences added with the budget change made
+        # qwen3.6 answer with bare prose instead of JSON; the identical prompt
+        # without them returned valid JSON. Keep the rule list terse.
+        prompt = _summary_prompt()
+        assert "is a failure, not a shorter summary" not in prompt
+        assert "do not pad to reach the ceiling" not in prompt
 
     def test_experience_states_the_highlight_budget(self):
         assert "at most 8 highlights" in _experiences_prompt()

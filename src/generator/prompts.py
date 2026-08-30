@@ -29,10 +29,53 @@ from ..planner.models import (
     ResumePlan,
 )
 
-#: Budgets the ResumeValidator checks. Stated in the prompts so the model aims
-#: inside them rather than being corrected afterwards.
+#: Sanity bounds the ResumeValidator warns outside of. Deliberately wide: they
+#: exist to catch a summary that collapsed or ran away, not to set house style.
 SUMMARY_MIN_WORDS = 20
 SUMMARY_MAX_WORDS = 120
+
+#: The budget the generator actually writes to — much tighter than the
+#: validator's bounds, and a separate number because they do different jobs.
+#:
+#: Measured 2026-08-30 across six live runs: generated summaries ran 52-71
+#: words and occupied 5-7 of the ~70 text lines a page holds, while the *source*
+#: summaries they were rewritten from are 35-52 words. The model was padding
+#: past its own input. Every resume overflows one page by 11-20 lines, and the
+#: Revision Engine trims deterministically from the bottom; a summary is prose
+#: with no last element, so it cannot be trimmed later without an LLM. Sizing it
+#: correctly here is what keeps the whole revision path LLM-free.
+#:
+#: **Change the number, not the prose.** Tightening the budget was safe; the two
+#: extra rule sentences added alongside it were not. Wording like "A summary that
+#: loses those to fit is a failure, not a shorter summary" pushed qwen3.6 out of
+#: JSON mode entirely — it answered with the summary as bare prose and the call
+#: died on `InvalidGeneratorJSON`. A/B on backend+AGGRESSIVE: identical prompt
+#: minus those 293 characters returned valid JSON; with them, raw prose. The
+#: existing anchor rule already carries the requirement, and
+#: `_report_lost_anchors` measures whether it held.
+#:
+#: A floor rather than "as short as possible": the summary's value is
+#: concentrated, not proportional to length. It is the first thing read, and
+#: `_report_lost_anchors` exists because a model once traded "2 years at Zoho
+#: building platforms in Java, Spring Boot and Redis" for "Application Software
+#: Development professional" — shorter, and worthless. The floor keeps room for
+#: the employer, the years and the named technologies.
+#:
+#: **The band is 20 words wide because a 10-word band does not work.** The
+#: target was 35-45; measured on fullstack+AGGRESSIVE, 4 trials per width:
+#:
+#:     band        JSON    words produced
+#:     20-120      4/4     60
+#:     35-45       0/4     -
+#:     35-55       4/4     43
+#:     40-60       4/4     42
+#:
+#: At 35-45 the model stops emitting JSON altogether and answers with bare
+#: prose. The band is what the model is *told*; 35-55 still yields 42-43 words,
+#: which is the length actually wanted. Widening the instruction was the way to
+#: get the shorter output — narrowing it further gets nothing at all.
+SUMMARY_TARGET_MIN_WORDS = 35
+SUMMARY_TARGET_MAX_WORDS = 55
 MAX_EXPERIENCE_HIGHLIGHTS = 8
 MAX_PROJECT_HIGHLIGHTS = 6
 
@@ -192,6 +235,12 @@ outcome.
 - Start every highlight with a strong past-tense verb. No pronouns, no trailing period \
 inconsistency — be consistent.
 - Each highlight states what was done and why it mattered. Avoid "Responsible for".
+- Keep each highlight to 15 words or fewer. At most two highlights in your whole \
+answer may exceed that, and only where the content genuinely needs it.
+- Cut filler, never facts. Numbers, technologies, product names and concrete \
+outcomes always stay; phrases like "ensuring seamless integration across \
+enterprise applications" go.
+- Shorter highlights are not licence to write more of them.
 - Write normal sentence case. Do not capitalise a keyword mid-sentence to make it \
 stand out: write "software testing", not "Software Testing". Only proper nouns are \
 capitalised — product and technology names like Java, Spring Boot, AWS.
@@ -258,6 +307,12 @@ bottom to fit one page, so the last bullet in your list must be the one you woul
 up first.
 - Start every highlight with a strong past-tense verb. Each states what was built and \
 what it achieved.
+- Keep each highlight to 15 words or fewer. At most two highlights in your whole \
+answer may exceed that, and only where the content genuinely needs it.
+- Cut filler, never facts. Numbers, technologies, product names and concrete \
+outcomes always stay; phrases like "ensuring seamless integration across \
+enterprise applications" go.
+- Shorter highlights are not licence to write more of them.
 - type is a short category such as "Personal", "Open Source", "Academic", or \
 "Professional".
 - technologies lists concrete tools and languages. domains lists problem areas.
@@ -327,8 +382,8 @@ def build_summary_prompt(
     """
     return _SUMMARY_PROMPT_TEMPLATE.format(
         mode_rules=_mode_rules(mode),
-        min_words=SUMMARY_MIN_WORDS,
-        max_words=SUMMARY_MAX_WORDS,
+        min_words=SUMMARY_TARGET_MIN_WORDS,
+        max_words=SUMMARY_TARGET_MAX_WORDS,
         summary_plan=_dumps(_summary_plan_projection(plan)),
         summary=resume.summary,
         resume=_dumps(_resume_projection(resume)),
