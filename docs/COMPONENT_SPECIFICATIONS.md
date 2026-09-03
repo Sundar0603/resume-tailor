@@ -309,21 +309,27 @@ enough for the Revision Engine, which already holds the Resume.
 
 ## Responsibilities
 
-- Receive the current Resume object.
-- Receive the Quality Report.
-- Revise only the affected sections.
-- Respect each section's `revision_order`.
-- Preserve unchanged sections.
-- Minimize unnecessary modifications.
+- Receive the source Resume, the current Resume and the Quality Gate result.
+- Delete content deterministically until the resume fits one page.
+- Re-render, recompile and re-judge after every change.
+- Stop the moment the Quality Gate passes.
+- Compress selected bullets through a single consolidated LLM call, but only
+  when deterministic deletion is exhausted and the page still overflows.
+- Extract protected facts before that call and verify them after it.
+- Own attempt numbering, the artifact layout and the revision trail.
+- Raise when one page is unreachable without breaching a retention floor.
 
 ## Input
 
-- Resume.
-- Quality Report.
+- Source Resume (never modified; never read for content).
+- Current Resume.
+- QualityGateResult.
+- Output directory and job name.
 
 ## Output
 
-- Updated Resume.
+- `RevisionResult`, carrying the **changed** Resume, the final Quality Gate
+  verdict, the attempt counts and the revision trail.
 
 ## Out of Scope
 
@@ -332,6 +338,36 @@ enough for the Revision Engine, which already holds the Resume.
 - Rendering LaTeX.
 - PDF validation.
 - Report generation.
+- Deciding *what* content matters. That ordering is the Generator's, applied
+  once through `_order_highlights`, and the engine only consumes it.
+
+> **Amended in task 017.** Three corrections, each measured rather than argued.
+>
+> **`revision_order` is not deletion order.** This specification told the engine
+> to "respect each section's `revision_order`", which puts **Summary first**.
+> A deterministic trimmer cannot compress prose — it can only delete it
+> wholesale, which is the worst trade available — so the Summary is never a trim
+> target at all, and its length is fixed at *generation* time instead. The
+> deletion order is **Projects → Skills → Experience (Internship → Full-Time)**.
+> `REVISION_ORDER` remains in `src/quality/models.py` and is unused by the
+> engine.
+>
+> **"Revise only the affected sections" is not actionable.** The gate reports
+> `overflowing_sections`, but page overflow is a property of the whole document:
+> content on page two is not evidence that the section it landed in is the one
+> to trim. The engine trims by the authoritative order above and lets the
+> recompile decide whether it worked.
+>
+> **"Minimize unnecessary modifications" is served by stopping, not by
+> predicting.** Task 016 measured spill going `7 → 7 → 0` — bullet removals that
+> individually free nothing, because the subheading blocks move as a unit. The
+> engine therefore recompiles after every single step (~0.5 s) and halts at the
+> first pass, rather than estimating a batch and over-trimming.
+>
+> The Summary, Education, Contact and the immutable experience fields are never
+> touched, and the retention floors in `src/revision/floors.py` are hard: an
+> unreachable one-page target raises `OnePageInfeasibleError` rather than being
+> met by breaching one.
 
 ---
 

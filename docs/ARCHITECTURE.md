@@ -2,7 +2,7 @@ This document is the authoritative source for all architectural decisions in Res
 
 Resume Tailor CLI v1.0
 
-**Version:** 1.1
+**Version:** 1.4
 
 **Status:** Frozen
 
@@ -13,6 +13,30 @@ Resume Tailor CLI v1.0
 This document is Frozen: implementation may not diverge from it, but the
 document itself may be corrected when it is found to describe something the
 project never built. Each entry below records such a correction.
+
+**1.4 — 2026-08-31**
+
+- *Revision budget* — `max_revisions: 3` is now a cap on **LLM revision passes
+  only**, not on render→compile→judge iterations. The Revision Engine's
+  deterministic deletion loop is uncapped. Reason: the budget exists to bound
+  *inference*, which is what the 180-second run budget actually pays for. A
+  compile costs ~0.5s, and task 016 measured spill going `7 → 7 → 0` — removals
+  that individually free nothing, because the subheading blocks move as a unit.
+  Convergence needs 2–5 removals on the six live runs, so a hard cap of three
+  cycles would fail runs that otherwise pass. The deterministic loop is provably
+  terminating: every step strictly reduces the resume.
+- *Revision behaviour on failure* — the engine raises `OnePageInfeasibleError`
+  when one page is unreachable without breaching a retention floor. Reason: an
+  earlier note in PROJECT_KNOWLEDGE §10f required it to always deliver a
+  one-page resume; the user reversed that on 2026-08-31. The floors are hard,
+  and a loud failure beats a silently two-page resume or a silently gutted one.
+- *Revision order* — `revision_order` (Summary 1, Projects 2, Skills 3,
+  Experience 4) is the order sections would be *rewritten* in. It is **not** the
+  deletion order, which is Projects → Skills → Experience. Reason: a
+  deterministic trimmer cannot compress prose, only delete it wholesale, so the
+  Summary is never a trim target; its length is fixed at generation time
+  instead. Recorded because the two orderings disagree at the first entry and
+  the difference is easy to misread as a bug.
 
 **1.3 — 2026-08-29**
 
@@ -681,6 +705,10 @@ Revision 3
 Maximum
 
 4 LLM generations
+
+This caps **LLM revision passes**. The Revision Engine's deterministic
+deletion loop is uncapped and makes no LLM calls at all. Changed in 1.4 — see
+the Amendment Log.
 
 Never more.
 

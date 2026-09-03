@@ -84,6 +84,16 @@ def main() -> int:
             src.replace(out / new)
             print("  renamed {0} -> {1}".format(old, new), flush=True)
 
+    # The pipeline's own compile ran *before* revision, so 07_resume.pdf is the
+    # pre-revision artifact. Dump what was actually delivered alongside it.
+    dump(out / "11_final_resume.json", result.final_resume.model_dump_json(indent=2))
+    final = out / "final"
+    for name, new_name in (("resume.tex", "12_final.tex"), ("resume.pdf", "13_final.pdf")):
+        src = final / name
+        if src.exists():
+            (out / new_name).write_bytes(src.read_bytes())
+            print("  copied final/{0} -> {1}".format(name, new_name), flush=True)
+
     m = result.quality.metrics
     summary = [
         "# Live run\n",
@@ -108,6 +118,26 @@ def main() -> int:
             ", ".join(s.value for s in m.overflowing_sections) or "none"),
         "\n## Issues\n",
     ]
+    revision = result.revision
+    if revision is None:
+        summary.insert(-1, "\n## Revision\n\n- not run (first compile already passed)")
+    else:
+        summary.insert(-1, "\n".join([
+            "\n## Revision\n",
+            "- attempts (render->compile->gate): **{0}**".format(revision.attempts),
+            "- deterministic removals: **{0}**".format(revision.deterministic_steps),
+            "- compression passes: {0}  (LLM calls: {1})".format(
+                revision.compression_passes, revision.llm_calls),
+            "- trail: `revision_trail.json`",
+            "",
+            "| # | action | entity | detail | pages | spill |",
+            "|---|---|---|---|---|---|",
+        ] + [
+            "| {0} | `{1}` | `{2}` | {3} | {4} | {5} |".format(
+                step.attempt, step.action.value, step.entity_id,
+                step.detail[:70], step.page_count, step.spill)
+            for step in revision.trail
+        ]))
     for issue in result.quality.issues:
         summary.append("- `{0}` **{1}** — {2}".format(
             issue.severity.value, issue.code.value, issue.message))

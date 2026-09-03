@@ -8,7 +8,7 @@ Source Resume + JobAnalysis + ResumePlan + Mode
       -> LaTeX Renderer      -> resume.tex
       -> PDF Compiler        -> resume.pdf
       -> Quality Gate        -> QualityGateResult
-      -> Revision / Shortening                     (task 017, not built)
+      -> Revision Engine     -> one page            (only when the gate failed)
 ```
 
 Every stage already exists and is tested on its own. This module only connects
@@ -55,6 +55,7 @@ from src.planner.planner import ResumePlanner
 from src.quality.quality_gate import QualityGate
 from src.renderer.latex_renderer import LatexRenderer
 from src.renderer.markdown_serializer import MarkdownSerializer
+from src.revision.revision_engine import RevisionEngine
 
 from .models import PipelineResult
 
@@ -72,6 +73,8 @@ class ResumePipeline:
         template_directory: str = "templates",
         quality_gate: Optional[QualityGate] = None,
         compiler: Optional[PDFCompiler] = None,
+        reviser: Optional[RevisionEngine] = None,
+        revise: bool = True,
     ) -> None:
         """
         Build a pipeline.
@@ -95,6 +98,17 @@ class ResumePipeline:
         self._renderer = LatexRenderer(template_directory=template_directory)
         self._compiler = compiler if compiler is not None else PDFCompiler()
         self._gate = quality_gate if quality_gate is not None else QualityGate()
+        self._reviser = (
+            reviser
+            if reviser is not None
+            else RevisionEngine(
+                provider=provider,
+                template_directory=template_directory,
+                compiler=self._compiler,
+                quality_gate=self._gate,
+            )
+        )
+        self._revise = revise
 
     def run(
         self,
@@ -110,6 +124,15 @@ class ResumePipeline:
         Compilation failure is not raised: the Quality Gate judges it from the
         preserved log and the result carries ``compilation=None``. Every other
         stage's exceptions propagate unchanged.
+
+        When the gate fails and a Revision Engine is wired in, the resume is
+        shortened until it passes and ``result.quality`` becomes the *final*
+        verdict. ``generated_resume`` keeps its pre-revision meaning, and
+        ``result.final_resume`` is what was delivered.
+
+        Revision is skipped after a compilation failure: there is no page to
+        measure, and the defect is in the document rather than its length.
+        A ``RevisionError`` propagates like any other stage exception.
         """
         job_analysis = self._analyzer.analyze(job_description)
         resume_plan = self._planner.plan(source_resume, job_analysis, mode)
@@ -139,7 +162,19 @@ class ResumePipeline:
                 compilation.pdf_path, compilation.tex_path, compilation
             )
 
+        revision = None
+        if self._revise and compilation is not None and not quality.passed:
+            revision = self._reviser.revise(
+                source_resume=source_resume,
+                current_resume=generated,
+                quality_result=quality,
+                output_directory=output_directory,
+                job_name=job_name,
+            )
+            quality = revision.quality
+
         return PipelineResult(
+            revision=revision,
             planner_discarded=list(self._planner.last_discarded),
             generator_discarded=list(self._generator.last_discarded),
             generator_warnings=list(self._generator.last_warnings),

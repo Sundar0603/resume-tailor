@@ -3,10 +3,9 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 016 (Quality Gate) plus the pipeline wiring.
-Baseline: **1026 tests
-passing** (902 after task 015); 31 of those need a TeX distribution and skip
-when none is on PATH. Update this file at the end of each task; do not rewrite
+Status as of the end of task 017 (Revision Engine).
+Baseline: **1340 tests passing, 1 skipped** (1026 after task 016); 83 of those
+need a TeX distribution and skip when none is on PATH. Update this file at the end of each task; do not rewrite
 it.
 
 ---
@@ -24,7 +23,7 @@ Markdown Resume
   → LaTeX Renderer       ✅ 014   (fed the Resume object, not Markdown)
   → pdflatex Compiler    ✅ 015
   → Quality Gate         ✅ 016
-  → Revision Engine      ⬜ 017
+  → Revision Engine      ✅ 017
   → Reporter             ⬜
 ```
 
@@ -48,7 +47,7 @@ PDF Compiler  →  resume.pdf
       ↓
 Quality Gate  →  QualityGateResult
       ↓
-Revision / Shortening  (task 017, not built)
+Revision / Shortening  →  a one-page Resume   (only when the gate failed)
 ```
 
 **The Markdown Serializer branches off the Resume Object; it is not a link in
@@ -1244,7 +1243,10 @@ experiences, ≥2 projects, ≥1 skill category, ≥1 education, non-empty highl
 and the **Summary, which is prose with no last element** — a deterministic
 trimmer cannot compress it, only delete it wholesale.
 
-**Resolved (2026-08-30): the revision path needs no LLM at all.** The summary is
+**Resolved (2026-08-30): the revision path needs no LLM at all.** *Still true in
+practice — see §10h, where all six live runs converge with zero LLM calls — but
+task 017 built the compression path anyway, as defence in depth for a resume
+this measurement does not cover.* The summary is
 sized correctly at *generation* time instead — 35-45 words, anchors mandatory
 (`SUMMARY_TARGET_MIN_WORDS`/`MAX_WORDS`) — which removes the one job that would
 have needed a model during revision. Measured: the deterministic trim loop
@@ -1257,11 +1259,14 @@ deterministic trimmer cannot compress prose, only delete it, which is the worst
 trade available. For deterministic trimming the order is Projects → Skills →
 Experience.
 
-**Retention floors, set by the user 2026-08-30.** Nothing may be trimmed below
-these; they sit *above* the Validator's own minimums, which remain the hard
-backstop:
+**Retention floors, set by the user 2026-08-30 — SUPERSEDED 2026-08-31, see
+§10h.** The floors below were measured infeasible: three of six live runs could
+not reach one page under them. Task 017 relaxed them and the relaxed set is what
+ships. Recorded here because the reasoning is still worth reading, and because
+the *reason* they failed (a skill category renders as one row, so category
+floors buy almost nothing) still holds.
 
-| unit | floor |
+| unit | floor (superseded) |
 |---|---|
 | bullets per project | 3 |
 | bullets, full-time experience | 5 |
@@ -1269,10 +1274,12 @@ backstop:
 | skill categories | 5 |
 | skills within a category | 2 |
 
-**Failure is not an option.** The Revision Engine must always deliver a one-page
-resume and must return the *changed* resume, never the original unchanged. This
-overrides the earlier recommendation to hand back the original on
-non-convergence.
+**"Failure is not an option" — SUPERSEDED 2026-08-31, see §10h.** This section
+required the engine to always deliver a one-page resume. Task 017 reverses it:
+the floors are hard, and an unreachable one-page target raises
+`OnePageInfeasibleError` rather than being met by breaching one. What survives
+is the other half — the engine must return the *changed* resume and must never
+report the original failing resume as a success.
 
 **Artifacts.** The Revision Engine owns attempt numbering and layout — it owns
 the loop, and the Compiler was built so "the caller owns attempt numbering".
@@ -1574,8 +1581,344 @@ real invocation failed. The offline test proves the stages fit together; only
 the live one proves the chain survives a real model's output.
 
 ---
+---
+
+## 10h. Revision / Shortening Engine (task 017)
+
+`src/revision/` — `exceptions.py`, `models.py`, `floors.py`, `measure.py`,
+`deletion.py`, `facts.py`, `prompts.py`, `sampling.py`, `compression.py`,
+`revision_engine.py`, `__init__.py`. Its own package, like the compiler and the
+gate.
+
+```python
+RevisionEngine(provider=None, template_directory="templates",
+               renderer=None, compiler=None, quality_gate=None,
+               max_compression_passes=3)
+    .revise(*, source_resume, current_resume, quality_result,
+              output_directory, job_name="resume") -> RevisionResult
+```
+
+`provider=None` disables compression entirely, leaving a fully offline,
+deterministic engine. Everything else is injectable, matching `ResumePipeline`.
+
+### Four decisions that supersede §10f
+
+Taken with the user on 2026-08-31. `tasks/017-revision-engine.md` and §10f
+disagreed on all four; the task doc won each time.
+
+| | §10f said | ships as |
+|---|---|---|
+| floors | project bullets 3, **categories** 5, skills/category 2 | project bullets 2, **individual skills** 5, projects ≥2 |
+| non-convergence | always deliver a one-page resume | raise `OnePageInfeasibleError` |
+| LLM | "the revision path needs no LLM at all" | deterministic-first, compression as defence in depth |
+| loop bound | — (`ARCHITECTURE.md`: `max_revisions: 3`) | deletions uncapped, **LLM passes** capped at 3 |
+
+The floor relaxation is what makes the one-page guarantee reachable: §10f's own
+budget table had `backend_strict` short by 4 lines under the tight floors.
+Uncapping deletions is safe because each step strictly shrinks the resume, so
+the loop provably terminates; the cap belongs on the LLM calls, which are what
+the 180-second budget actually pays for.
+
+**Floors as shipped** (`src/revision/floors.py`, the single home — a test
+asserts no other module defines one). They sit *above* the Validator's minimums,
+which remain the hard backstop.
+
+| unit | minimum |
+|---|---|
+| projects | 2 |
+| bullets per project | 2, then the project goes whole |
+| individual skills, total | 5 |
+| protected leading skill categories | 1 (highest priority, never trimmed) |
+| internship bullets | 3 |
+| full-time bullets | 5 |
+| work experiences | exactly 2 |
+| bullets in any entity | 1, independent of every other floor |
+
+### Decide and apply are separate, and that is what makes it testable
+
+`deletion.next_removal(resume)` returns the single next legal move or `None`;
+`deletion.apply_removal(resume, step)` returns a new resume. Both pure, neither
+mutating. The whole deletion policy is therefore exercisable with no renderer,
+no compiler, no PDF and no TeX — 48 tests that run in 0.1 s. `removal_plan` and
+`freeable_lines` are the same two functions dry-run to exhaustion, so
+`freeable_lines` can never disagree with what the engine would actually do.
+There is one policy, not a policy and a separate model of it.
+
+### The estimates never decide
+
+`measure.py` estimates rendered lines from a **character budget of 108**, read
+off a real PDF in task 016 (a line in the 553.7 pt column holds 14–15 words or
+108–114 characters). It sizes the work and picks compression candidates. It
+never decides whether the resume fits: every step is rendered, compiled and
+re-judged, and `result.passed` is the only stopping signal.
+
+That is not caution, it is measurement. The live trails show it plainly —
+spill per attempt, `backend_aggressive`:
+
+```text
+13 → 7 → 7 → 7 → 2 → 0
+```
+
+Three consecutive removals changed nothing, then one cleared five lines. The
+`\resumeSubHeadingListStart` blocks move as a unit rather than reflowing line by
+line, exactly as §10f measured. An engine converging on arithmetic would have
+declared four of those five steps useless and given up.
+
+Pinned by `test_revision_integration.py::TestTrimmingIsCoarserThanOneLinePerBullet`,
+which asserts at least one step frees nothing.
+
+### Removal order, and two readings resolved
+
+```text
+Projects → Skills → Experience (Internship → Full-Time)
+```
+
+**Projects are trimmed to the floor everywhere before any project is removed.**
+The task doc's sentence is global — "Projects must be shortened bullet-by-bullet
+before the entire project is removed" — and the per-project reading would delete
+a whole two-bullet project while a four-bullet project sat untouched: strictly
+more content lost for the same page saving.
+
+**A skills step is never one skill.** A category renders as one wrapping row, so
+removing one skill from a twelve-skill category frees nothing. With a floor of
+five *individual* skills a 21-skill resume offers sixteen nominal removals worth
+almost no lines; taken one at a time that is sixteen wasted recompiles before
+Experience is reached. Each skills step therefore removes exactly enough
+trailing skills to drop that category's rendered line count, or empties it
+outright. `backend_aggressive` converged on a skills step that removed the
+one-skill `Databases` category — the cheapest line available.
+
+**The intern-first rule is a no-op on today's resumes.** The floor is 3 and every
+internship carries exactly 3, so every experience removal lands on the full-time
+role. Documented and pinned, not a defect: §10f flagged the weaker version
+("at most 2 bullets"), and the floor closes the gap to zero.
+
+### Measured: all six live runs converge with zero LLM calls
+
+`scripts/replay_revision.py` reloads each run's
+`output/runs/<name>/04_generated_resume.json` and drives it through the real
+renderer, real pdflatex and the real Quality Gate. No inference, no cost.
+
+| run | pages | spill | steps | attempts | LLM | wall |
+|---|---|---|---|---|---|---|
+| backend_strict | 1 → 1 | 0 | 0 | 0 | 0 | — |
+| backend_aggressive | 2 → **1** | 13 → 0 | 5 | 5 | 0 | 2.7 s |
+| cybersecurity_strict | 2 → **1** | 5 → 0 | 2 | 2 | 0 | 1.1 s |
+| cybersecurity_aggressive | 2 → **1** | 16 → 0 | 5 | 5 | 0 | 2.7 s |
+| fullstack_strict | 1 → 1 | 0 | 0 | 0 | 0 | — |
+| fullstack_aggressive | 2 → **1** | 7 → 0 | 2 | 2 | 0 | 1.1 s |
+
+Six of six. §10f's prediction holds, and the LLM compression path is dead code
+on real content — which is why it needs synthetic tests and why a live run will
+never exercise it. It stays because "no real resume has needed it yet" is not
+"no resume can".
+
+`tests/revision/test_revision_integration.py` runs exactly this on every change,
+plus the three canonical resumes, with a provider that raises if touched.
+
+**Confirmed live, 2026-09-03.** All six pairings were re-run end to end through
+`scripts/live_run.py` against the real provider — fresh analysis, planning and
+generation, then revision. Every one lands on one page:
+
+| run | pages | passed | removals | revision LLM calls | wall |
+|---|---|---|---|---|---|
+| backend_strict | 1 | ✅ | fit already | — | 66.2 s |
+| backend_aggressive | 1 | ✅ | 5 | 0 | 75.4 s |
+| cybersecurity_strict | 1 | ✅ | 2 | 0 | 70.5 s |
+| cybersecurity_aggressive | 1 | ✅ | 5 | 0 | 78.8 s |
+| fullstack_strict | 1 | ✅ | fit already | — | 63.5 s |
+| fullstack_aggressive | 1 | ✅ | 2 | 0 | 71.8 s |
+
+The three that read `passed: False, pages: 2` in §10g — `cybersecurity_strict`,
+`cybersecurity_aggressive`, `fullstack_aggressive` — are the ones this engine
+fixed. Wall-clock is dominated entirely by generation; revision costs ~1–3 s.
+
+Determinism held across a repeated run: every LLM reply came back byte-identical
+(6675 / 10254 / 307 / 2330 / 2302 chars) and the trail was step-for-step the
+same.
+
+`live_run.py` now also writes `11_final_resume.json`, `12_final.tex` and
+`13_final.pdf`. Without them the run directory lied: the pipeline compiles
+*before* revision, so `07_resume.pdf` is the two-page draft sitting next to a
+`passed: true` summary. **A run directory that does not record its own final
+artifact will be read as if the draft were the deliverable.**
+
+### The compression path
+
+Reached only when deletion is exhausted and the page still overflows.
+
+- **One consolidated call per pass**, never one per bullet. Pinned.
+- **Skills are skipped.** A skill category is not prose; shortening it means
+  either deleting skills (that is deletion) or renaming a technology (that is
+  mutating a protected fact by definition). A deliberate divergence from the
+  task doc's priority list, pinned by a test.
+- **Only bullets that already wrap** are eligible. A one-line bullet sent for
+  shortening spends facts and buys no space.
+- **The prompt omits rather than forbids.** The model never sees the summary,
+  education, contact or unselected bullets, so it cannot rewrite them. An id it
+  invents is rejected on the way back in.
+- **Sampling is greedy** (`compression_options()` = `deterministic_options`
+  with a 2048-token budget), unlike the Generator. Compression is constraint
+  satisfaction, not writing, so determinism beats variety.
+
+### §11's "no technology lexicon" is false for this one job
+
+§11 records that "recognising 'this word is a technology' needs a lexicon the
+project does not have". True for open-ended prose. Not true here: the resume
+names its own technologies in `Experience.technologies`,
+`Project.technologies`, the skills section and the project names.
+`facts.build_lexicon(resume)` is built from those, longest-first so
+`Spring Boot` is recognised before `Spring`. Per-run, precise, cannot go stale.
+
+Two classes of fact, verified differently because they fail differently:
+
+- **numerics** — exact string match, whitespace-insensitive (`30 ms` = `30ms`)
+  and guarded against a leading digit so `40%` is not satisfied by `140%`.
+  Plus the reverse check the task doc implies but does not name: **a number in
+  the reply that was not in the original is a fabrication and rejects the
+  compression.** That single check is what catches `40% → 50%` twice.
+- **terms** — case-insensitive with non-alphanumeric boundaries, so
+  `Reduced API Latency` may become `cut API latency` while `Redis → caching`,
+  `Spring Boot → a framework` and `OAuth 2.0 → authentication` are all rejected.
+  `Java` is not satisfied by `JavaScript`.
+
+Terms shorter than three characters are not protected. `Go` is the known
+casualty, accepted: protecting it would protect every "go".
+
+A rejected compression is **not an error** — the original bullet is kept and the
+run continues. Rejections are recorded on `RevisionResult.compression_outcomes`,
+because a pass that silently kept every bullet and a pass that never happened
+look identical in the finished resume.
+
+### The test seam with no precedent in the repo
+
+Every other component here can be faked with canned data. A *convergence loop*
+cannot: a canned verdict either always passes or never does. And there was no
+compiler in the repo that succeeds without TeX —
+`tests/pipeline/test_end_to_end.py::_never_compiles` fakes only a failing
+engine.
+
+`tests/revision/conftest.py` supplies the missing half. `StubCompiler` writes
+the **real** rendered LaTeX to disk; `CountingGate` reads it back and measures
+it. The pairing is faithful rather than convenient: nothing tells the gate what
+the resume contained, so a renderer that stopped emitting bullets would break
+these tests rather than sail past them.
+
+**One trap, hit during the build.** The first `CountingGate` counted
+`\resumeItem{` *occurrences*. That is monotone in deletion and completely blind
+to compression — shortening a bullet leaves the macro exactly where it was — so
+every compression test failed while the compression path was working correctly.
+It now brace-matches each macro's argument and sums `estimated_lines` over the
+text. The general lesson is the §10d one again from the other side: **a metric
+that cannot move when the thing under test works is not a test.**
+
+### Artifacts
+
+The engine owns attempt numbering; the compiler owns only the job name.
+
+```text
+<output_directory>/
+    work/                  every attempt compiles here, overwritten
+    attempt_<n>/           checkpoints only
+    final/                 the accepted resume
+    revision_trail.json    every step, including the non-checkpoints
+```
+
+Checkpoints are written when the gate passes, after each compression pass, and
+on the last attempt before giving up — that last one for the same reason the
+compiler preserves its log before raising: the workspace is the only evidence
+and it is about to be overwritten. Intermediate attempts share `work/`, per
+§10f: eight PDFs nobody opens is clutter, the trail is what gets read.
+
+`OnePageInfeasibleError` carries `spill`, `steps_taken`, `pdf_path` and
+`trail_path`, breaking the house docstring-only-exception rule for the same
+reason `CompilationFailedError` does: nothing is returned, so the diagnostics
+have nowhere else to travel.
+
+### Pipeline wiring
+
+`ResumePipeline(provider, template_directory, quality_gate, compiler, reviser,
+revise=True)`. When the gate fails, the engine runs and `result.quality` becomes
+the **final** verdict.
+
+- `generated_resume` deliberately keeps its *pre-revision* meaning. When a
+  resume comes out wrong the question is always which stage did it, and
+  overwriting the generator's output makes that unanswerable.
+  `result.final_resume` is what was delivered.
+- **Revision is skipped after a compilation failure.** There is no page to
+  measure, and the defect is in the document rather than its length.
+- **`CompilationFailedError` is not caught inside the engine**, unlike in the
+  pipeline. Overflow is the failure this engine handles; a resume that stops
+  compiling means a removal broke the document, which is a defect and must
+  surface with its log path rather than be absorbed as "still too long".
+
+### Found by this task: generation can arrive already below a floor
+
+The floors govern *trimming*. Nothing in the Generator knows about them, so a
+generated resume can arrive below one, and the engine can only decline to make
+it worse.
+
+| run | unit | floor | arrived at |
+|---|---|---|---|
+| `cybersecurity_aggressive` | full-time bullets | 5 | **4** |
+| `fullstack_strict` | internship bullets | 3 | **2** |
+
+Both still converge and still pass; the resume is simply thinner than the policy
+intends. The invariant the engine can actually promise, and the one the tests
+assert, is **"never below the floor, and never below where it started"**.
+
+Closing the gap belongs to *generation*, exactly as bullet length and summary
+length were closed there rather than at revision time. Pinned by
+`TestGenerationCanArriveBelowAFloor` so it stays visible instead of becoming
+folklore.
+
+
+### Skill-category priority already reaches the deletion policy
+
+A live backend run removed the whole `Databases` row, which reads like a
+priority bug and is not one. The chain was already complete:
+
+`Planner` assigns each `skills_plan` a priority → `Generator._apply_skills`
+sorts by it, most relevant first ("so the Quality Gate can trim from the
+bottom") → `deletion._next_skill_removal` walks categories **bottom-up**.
+
+`SkillCategory` does not carry the priority, so **position is the priority** by
+the time revision sees the resume. That is a faithful proxy only because the
+Generator's sort is the last thing to touch the ordering — anything that
+reorders categories afterwards would silently invert the deletion policy.
+
+`Databases` was removed because the backend JD contains **zero** data-storage
+signal (`sql`, `database`, `postgres`, `mysql`, `redis`, `query`, `schema`,
+`storage`, `orm`, `persistence` — all zero occurrences), so the Planner ranked
+it priority 3, the lowest in the plan, and the source category held one skill
+(`MySQL`). Lowest priority, last position, first removed. Working as designed.
+
+**What was missing was the guarantee, not the ordering.** The only skills floor
+was resume-wide (≥5 total), so a hungry enough run could have gutted the
+*top* category. `floors.PROTECTED_SKILL_CATEGORIES = 1` now makes the leading
+category untouchable, and `removable_skills` is bounded twice — by the
+resume-wide floor and by how many skills sit outside the protected span.
+
+Verified by construction rather than assertion: the same generated resume with
+`Databases` moved to the front (what a DB-heavy posting's priority would
+produce) still converges to one page in 5 steps with 0 LLM calls, and takes
+`Monitoring & Observability` — the new bottom row — instead. `MySQL` survives.
+
+Raising the constant above 1 costs freeable lines and can turn a convergent
+resume into a `RevisionError`. It is a floor, and it belongs in `floors.py`
+with the rest.
+
 
 ## 11. Known open items
+
+- **NEW: a crashed `live_run.py` leaves the previous run's artifacts looking
+  current.** The output directory is keyed on resume stem + mode and is written
+  incrementally, so a run that dies early — a mistyped JD path, a provider
+  timeout — leaves the *prior* run's `10_run_summary.md` in place with no marker
+  that it is stale. Hit while re-running the cybersecurity pairing, whose JD is
+  `application-software-developer.md`, not a `cybersecurity.md` (there is no
+  such fixture). Harmless when watching the console; a trap for an unattended
+  batch. A stamp written first and cleared last would close it.
 
 - **FIXED: AGGRESSIVE mode could not plan the backend pairing (0/4).**
   Found by the first real end-to-end run (2026-08-29) against
@@ -1632,18 +1975,41 @@ the live one proves the chain survives a real model's output.
 - **`src/cli/_common.py` is not extracted.** `analyze.py` and `plan.py` already
   duplicate ~60 lines of provider bootstrap + error ladder. A third CLI command
   should trigger the extraction.
-- **No bullet-level targeting in the plan.** Plan models address whole entities; there is no
-  `highlight_indices: List[int]`. The Revision Engine may need it — though §10f
-  argues it mostly does not: with a 0.5s recompile the trimmer needs an *order*
-  over removable content, not an estimate of what each bullet costs.
+- **RESOLVED: no bullet-level targeting in the plan, and none is needed.** Plan
+  models address whole entities; there is no `highlight_indices: List[int]`.
+  §10f argued the Revision Engine mostly would not need it, and §10h confirms
+  it: the engine needs an *order* over removable content, which
+  `_order_highlights` already guarantees per entity, plus a recompile to tell it
+  whether the removal helped. Six of six live runs converge without it.
 
 - **DECIDED: which experience to trim first.** Intern bullets, then full-time,
   keyed on `employment_type`. An internship is a stated invariant. See §10f.
 
-- **Nothing persists the quality report.** `ARCHITECTURE.md` describes
-  `attempt_N_report.json` in the attempt directory. The gate deliberately
-  writes nothing — the caller owns the attempt directory, exactly as the
-  compiler owns `job_name` but not attempt numbering.
+- **Nothing persists the quality report, and `revision_trail.json` is what
+  replaced it.** `ARCHITECTURE.md` describes `attempt_N_report.json` in the
+  attempt directory. The gate still deliberately writes nothing — the caller
+  owns the attempt directory — and the Revision Engine, which is that caller,
+  records each step's page count and spill in the trail instead. One file that
+  gets read beats one per attempt that does not.
+- **NEW (task 017): generation can emit a resume already below a retention
+  floor.** `cybersecurity_aggressive` arrives with a 4-bullet full-time role
+  against a floor of 5, `fullstack_strict` with a 2-bullet internship against a
+  floor of 3. The floors govern *trimming*; nothing in the Generator knows about
+  them, and the Revision Engine can only decline to make a violation worse.
+  Both runs still reach one page and pass. Closing this belongs to generation —
+  a minimum-bullets rule in the experience prompt, the way bullet length and
+  summary length were fixed there. Pinned by
+  `tests/revision/test_revision_integration.py::TestGenerationCanArriveBelowAFloor`.
+
+- **NEW (task 017): the LLM compression path has no live coverage.** All six
+  runs converge deterministically, so `src/revision/compression.py` and
+  `src/revision/prompts.py` are exercised only by synthetic tests. The prompt
+  has never met a real model. §9 lesson 6 — offline tests are not evidence — is
+  unresolved for exactly this one path, and the first resume that needs it will
+  be its first live trial. A cheap mitigation if it ever matters: force the path
+  by running `RevisionEngine` with an artificially tight gate against a real
+  provider.
+
 - **`backlog.txt`** holds three "Validation v2" test-coverage ideas.
 - **Vocabulary control covers fields, not prose — accepted.** `technologies`
   and `domains` are filtered against the vocabulary; the words *inside* a
@@ -1710,7 +2076,8 @@ the live one proves the chain survives a real model's output.
   attempts cost about 2 s of that 110 s. The budget pressure is all in the LLM
   calls.
 - **There is now an end-to-end chain, but still no CLI.** `src/pipeline/`
-  connects analyze → plan → generate → serialize → render → compile → judge,
+  connects analyze → plan → generate → serialize → render → compile → judge →
+  revise,
   and `tests/pipeline/` runs it offline on every change. What is still missing
   is a *command*: no `resume-tailor` subcommand drives it, so the entry point
   is `ResumePipeline` in Python or `tests/pipeline/verify_pipeline.py`. That
@@ -1726,7 +2093,10 @@ the live one proves the chain survives a real model's output.
   — there is still no CLI path from a job description to a file on disk.
   `resume-tailor doctor` gained a LaTeX *check* in task 015 but no command
   produces a PDF.
-- **Everything overflows one page, in both modes**, but by less than it sounds.
+- **FIXED: everything overflowed one page, in both modes.** The Revision Engine
+  (§10h) now trims every one of the nine to one page in 1–3 seconds with zero
+  LLM calls. The measurement below is what it trims *from*, and is still the
+  right starting point for judging whether a change made fitting harder.
   Re-measured in task 016 through the Quality Gate's own extractor: page 1
   holds ~70 text lines, and **seven of the nine compiled resumes spill only 3–9
   lines onto page 2** (≈2–4 bullets). The two exceptions are

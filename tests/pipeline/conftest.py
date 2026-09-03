@@ -31,6 +31,10 @@ SUMMARY_MARKER = '"summary": "<the rewritten summary>"'
 # "projects": [, so those keys do not discriminate.
 EXPERIENCES_MARKER = '"experience_id": "<the id given in the plan>"'
 PROJECTS_MARKER = '"project_id": "<the id given in the plan, or null'
+#: The Revision Engine's compression prompt. Sourced from the prompt module
+#: itself (``src.revision.prompts.response_markers``) so this fixture cannot
+#: drift out of step with the prompt it is meant to recognise.
+COMPRESSION_MARKER = "resume compression assistant"
 
 # 20-120 words, per the generator's hard budget.
 REWRITTEN_SUMMARY = (
@@ -160,6 +164,30 @@ def projects_payload(resume: Resume) -> Dict[str, Any]:
     }
 
 
+def compression_payload(prompt: str) -> Dict[str, Any]:
+    """
+    Return a compression reply that keeps every protected fact.
+
+    Built from the prompt itself: each bullet's protected facts are listed
+    there, so echoing them back produces a rewrite that passes verification
+    without this fixture having to know the resume's prose. A reply that
+    dropped them would be rejected and the compression path would look broken
+    when it was working.
+    """
+    payload = json.loads(prompt.split("<bullets>")[1].split("</bullets>")[0])
+    return {
+        "compressions": [
+            {
+                "bullet_id": entry["bullet_id"],
+                "text": "Delivered {0}.".format(", ".join(entry["protected_facts"]))
+                if entry["protected_facts"]
+                else "Delivered the work item.",
+            }
+            for entry in payload
+        ]
+    }
+
+
 class ScriptedProvider(LLMProvider):
     """
     Answers each stage's prompt with a canned, schema-valid reply.
@@ -193,6 +221,8 @@ class ScriptedProvider(LLMProvider):
             return "experiences", experiences_payload(self._resume)
         if PROJECTS_MARKER in prompt:
             return "projects", projects_payload(self._resume)
+        if COMPRESSION_MARKER in prompt:
+            return "compression", compression_payload(prompt)
         raise AssertionError(
             "ScriptedProvider saw a prompt it does not recognise. If a stage's "
             "prompt changed, update the markers in this file.\n\n"

@@ -4,6 +4,7 @@ The whole chain, end to end, offline.
 ```text
 Source Resume + JobAnalysis + ResumePlan + Mode
   -> Generator -> Serializer -> Renderer -> Compiler -> Quality Gate
+                                                     -> Revision Engine
 ```
 
 Every stage is covered in isolation elsewhere. What these tests cover is the
@@ -40,10 +41,10 @@ def source_resume():
     return ResumeParser().parse(SOURCE)
 
 
-def run(tmp_path, rewrite=True, mode=PlanningMode.STRICT, compiler=None):
+def run(tmp_path, rewrite=True, mode=PlanningMode.STRICT, compiler=None, revise=True):
     resume = source_resume()
     provider = ScriptedProvider(resume, rewrite=rewrite)
-    pipeline = ResumePipeline(provider, compiler=compiler)
+    pipeline = ResumePipeline(provider, compiler=compiler, revise=revise)
     result = pipeline.run(
         source_resume=resume,
         job_description=JOB_DESCRIPTION,
@@ -174,3 +175,96 @@ def _never_compiles():
     import sys
 
     return PDFCompiler(engine=sys.executable, runner=runner)
+
+
+class TestTheRevisionEngineIsWiredIn:
+    """
+    The chain now ends in a delivered resume rather than a verdict.
+
+    These are seam tests like the rest of the file: the Revision Engine's own
+    behaviour is covered in ``tests/revision/``. What matters here is that the
+    Quality Gate's output is actually accepted by the engine, and that the
+    engine's output reaches ``PipelineResult``.
+    """
+
+    @needs_tex
+    def test_the_run_ends_on_one_page(self, tmp_path):
+        result, _ = run(tmp_path)
+        assert result.passed is True
+        assert result.quality.metrics.page_count == 1
+
+    @needs_tex
+    def test_the_quality_verdict_is_the_final_one(self, tmp_path):
+        result, _ = run(tmp_path)
+        if result.revision is None:
+            pytest.skip("this resume passed without revision")
+        assert result.quality == result.revision.quality
+        assert result.quality.passed is True
+
+    @needs_tex
+    def test_generated_resume_keeps_its_pre_revision_meaning(self, tmp_path):
+        # When a resume comes out wrong the question is always which stage did
+        # it. Overwriting the generator's output would make that unanswerable.
+        result, _ = run(tmp_path)
+        if result.revision is not None:
+            assert result.final_resume is result.revision.resume
+            assert result.final_resume is not result.generated_resume
+        else:
+            assert result.final_resume is result.generated_resume
+
+    @needs_tex
+    def test_the_revision_trail_is_written_beside_the_other_artifacts(self, tmp_path):
+        result, _ = run(tmp_path)
+        if result.revision is not None:
+            assert (tmp_path / "revision_trail.json").is_file()
+            assert (tmp_path / "final" / "resume.pdf").is_file()
+
+    @needs_tex
+    def test_revision_can_be_turned_off(self, tmp_path):
+        result, _ = run(tmp_path, revise=False)
+        assert result.revision is None
+        assert result.final_resume is result.generated_resume
+
+    @needs_tex
+    def test_a_passing_resume_is_never_revised(self, tmp_path):
+        result, _ = run(tmp_path, revise=True)
+        if result.revision is None:
+            assert result.passed is True
+
+    def test_a_compilation_failure_skips_revision(self, tmp_path):
+        # There is no page to measure, and the defect is in the document rather
+        # than its length.
+        result, _ = run(tmp_path, compiler=_never_compiles())
+        assert result.compilation is None
+        assert result.revision is None
+        assert result.quality.issues[0].code is QualityIssueCode.COMPILATION_FAILED
+
+    def test_the_scripted_provider_recognises_a_compression_prompt(self):
+        # Guards the fixture against prompt drift: an unrecognised prompt is a
+        # hard AssertionError, so this would otherwise surface as a confusing
+        # failure inside an unrelated test.
+        from src.revision.prompts import build_compression_prompt, response_markers
+        from src.revision.models import (
+            BulletRef,
+            CompressionCandidate,
+            EntityKind,
+            ProtectedFacts,
+        )
+
+        candidate = CompressionCandidate(
+            bullet=BulletRef(
+                bullet_id="proj_001:bullet_1",
+                entity_id="proj_001",
+                entity_kind=EntityKind.PROJECT,
+                index=0,
+                text="Built a Redis caching layer that cut API latency by 40%.",
+            ),
+            estimated_lines=2,
+            facts=ProtectedFacts(numerics=["40%"], terms=["Redis"]),
+        )
+        prompt = build_compression_prompt([candidate])
+        assert all(marker in prompt for marker in response_markers())
+
+        reply = ScriptedProvider(source_resume()).generate(prompt)
+        assert "proj_001:bullet_1" in reply
+        assert "40%" in reply

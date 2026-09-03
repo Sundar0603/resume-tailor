@@ -18,6 +18,7 @@ from src.compiler.models import CompilationResult
 from src.parser.models import Resume
 from src.planner.models import PlanningMode, ResumePlan
 from src.quality.models import QualityGateResult
+from src.revision.models import RevisionResult
 from src.validation.models import ValidationIssue
 
 
@@ -42,6 +43,11 @@ class PipelineResult(BaseModel):
     compilation: Optional[CompilationResult] = None
     quality: Optional[QualityGateResult] = None
 
+    #: What the Revision Engine did, when one was wired in and the first
+    #: judgement failed. ``None`` means no revision was attempted --
+    #: either no reviser was supplied, or the resume already passed.
+    revision: Optional[RevisionResult] = None
+
     # Soft failures. Neither stage raises for these, and both reset them on the
     # next call, so the pipeline must capture them or they are lost -- which is
     # what a first live run showed happening. They matter: the planner drops
@@ -51,6 +57,20 @@ class PipelineResult(BaseModel):
     planner_discarded: List[str] = Field(default_factory=list)
     generator_discarded: List[str] = Field(default_factory=list)
     generator_warnings: List[ValidationIssue] = Field(default_factory=list)
+
+    @property
+    def final_resume(self) -> Resume:
+        """
+        Return the resume that was actually delivered.
+
+        The revised one when a revision ran, otherwise the generated one.
+        ``generated_resume`` deliberately keeps its pre-revision meaning: when
+        a resume comes out wrong the question is always which stage did it, and
+        overwriting the generator's output would make that unanswerable.
+        """
+        if self.revision is not None:
+            return self.revision.resume
+        return self.generated_resume
 
     @property
     def passed(self) -> bool:
