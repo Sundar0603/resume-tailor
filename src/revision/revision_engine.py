@@ -327,6 +327,7 @@ class RevisionEngine:
 
         run.attempts += 1
         run.quality = quality
+        run.gate_results.append(quality)
         run.last_pdf_path = compilation.pdf_path
         run.last_tex_path = compilation.tex_path
         entry.page_count = quality.metrics.page_count
@@ -409,6 +410,10 @@ class _Run:
         #: The latest verdict. Seeded with the one that caused this revision,
         #: so a run where no legal removal exists still has a result to report.
         self.quality = quality
+        #: Every attempt's verdict, in order, for the Reporter's gate history.
+        #: The seed above is *not* included: it belongs to the pipeline's own
+        #: pre-revision compile, and the pipeline reports it separately.
+        self.gate_results = []  # type: List[QualityGateResult]
         self.last_pdf_path = None  # type: Optional[str]
         self.last_tex_path = None  # type: Optional[str]
 
@@ -467,6 +472,7 @@ class _Run:
             llm_calls=self.llm_calls,
             trail=list(self.trail),
             compression_outcomes=list(self.outcomes),
+            gate_results=list(self.gate_results),
             pdf_path=str(self.root / FINAL_DIRECTORY / "{0}.pdf".format(self.job_name)),
             tex_path=str(self.root / FINAL_DIRECTORY / "{0}.tex".format(self.job_name)),
             trail_path=str(self.trail_path),

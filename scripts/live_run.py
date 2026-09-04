@@ -15,6 +15,12 @@ from src.parser import ResumeParser
 from src.pipeline import ResumePipeline
 from src.planner.models import PlanningMode
 from src.providers.factory import ProviderFactory
+from src.report import (
+    CHANGES_FILENAME,
+    REPORT_FILENAME,
+    REPORT_JSON_FILENAME,
+    Reporter,
+)
 
 
 class TimingProvider(LLMProvider):
@@ -95,65 +101,35 @@ def main() -> int:
             print("  copied final/{0} -> {1}".format(name, new_name), flush=True)
 
     m = result.quality.metrics
-    summary = [
-        "# Live run\n",
+
+    # The Reporter owns the run's narrative. This script keeps only what a
+    # report must never carry: wall clock, model name and per-call timings are
+    # non-deterministic, and a report has to satisfy first == second.
+    reporter = Reporter()
+    report = reporter.build(result)
+    reporter.write(report, str(out))
+    for old_name, new_name in (
+        (REPORT_FILENAME, "14_report.md"),
+        (CHANGES_FILENAME, "15_changes.md"),
+        (REPORT_JSON_FILENAME, "16_report.json"),
+    ):
+        (out / old_name).replace(out / new_name)
+        print("  wrote {0}".format(new_name), flush=True)
+
+    dump(out / "10_run_provenance.md", "\n".join([
+        "# Live run provenance\n",
         "- resume: `{0}`".format(resume_path),
         "- job description: `{0}`".format(jd_path),
         "- mode: **{0}**".format(mode.value),
         "- model: `{0}`".format(config.model),
         "- total wall clock: **{0:.1f}s**".format(elapsed),
         "- LLM calls: **{0}**  ({1})".format(
-            len(provider.calls), ", ".join("{0:.0f}s".format(c["seconds"]) for c in provider.calls)),
-        "\n## Quality verdict\n",
-        "- passed: **{0}**".format(result.passed),
-        "- pages: {0}".format(m.page_count),
-        "- overfull hboxes: {0} (max {1}pt)".format(m.overfull_hbox_count, m.max_overfull_points),
-        "- missing glyphs: {0}".format(m.missing_glyph_count),
-        "- text overlaps: {0}".format(m.overlap_count),
-        "- orphan words: {0}".format(m.orphan_word_count),
-        "- rule collisions: {0}".format(m.rule_collision_count),
-        "- total text lines: {0}".format(m.total_text_lines),
-        "- overflow: {0} lines / {1:.1f}pt".format(m.overflow_line_count, m.overflow_height_points),
-        "- overflowing sections: {0}".format(
-            ", ".join(s.value for s in m.overflowing_sections) or "none"),
-        "\n## Issues\n",
-    ]
-    revision = result.revision
-    if revision is None:
-        summary.insert(-1, "\n## Revision\n\n- not run (first compile already passed)")
-    else:
-        summary.insert(-1, "\n".join([
-            "\n## Revision\n",
-            "- attempts (render->compile->gate): **{0}**".format(revision.attempts),
-            "- deterministic removals: **{0}**".format(revision.deterministic_steps),
-            "- compression passes: {0}  (LLM calls: {1})".format(
-                revision.compression_passes, revision.llm_calls),
-            "- trail: `revision_trail.json`",
-            "",
-            "| # | action | entity | detail | pages | spill |",
-            "|---|---|---|---|---|---|",
-        ] + [
-            "| {0} | `{1}` | `{2}` | {3} | {4} | {5} |".format(
-                step.attempt, step.action.value, step.entity_id,
-                step.detail[:70], step.page_count, step.spill)
-            for step in revision.trail
-        ]))
-    for issue in result.quality.issues:
-        summary.append("- `{0}` **{1}** — {2}".format(
-            issue.severity.value, issue.code.value, issue.message))
-    if not result.quality.issues:
-        summary.append("- none")
-    summary.append("\n## Soft failures (reported, never raised)\n")
-    summary.append("- planner discarded: {0}".format(len(result.planner_discarded)))
-    for note in result.planner_discarded:
-        summary.append("  - {0}".format(note))
-    summary.append("- generator discarded: {0}".format(len(result.generator_discarded)))
-    for note in result.generator_discarded:
-        summary.append("  - {0}".format(note))
-    summary.append("- generator warnings: {0}".format(len(result.generator_warnings)))
-    for warning in result.generator_warnings:
-        summary.append("  - {0}: {1}".format(warning.code.value, warning.message))
-    dump(out / "10_run_summary.md", "\n".join(summary) + "\n")
+            len(provider.calls),
+            ", ".join("{0:.0f}s".format(c["seconds"]) for c in provider.calls)),
+        "",
+        "The run itself is described in `14_report.md`, `15_changes.md` and",
+        "`16_report.json`, all produced by the Reporter.",
+    ]) + "\n")
 
     print("\n=== {0} | pages={1} | passed={2} | {3:.1f}s ===".format(
         mode.value, m.page_count, result.passed, elapsed), flush=True)

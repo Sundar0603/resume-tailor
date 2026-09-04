@@ -127,8 +127,9 @@ class ResumePipeline:
 
         When the gate fails and a Revision Engine is wired in, the resume is
         shortened until it passes and ``result.quality`` becomes the *final*
-        verdict. ``generated_resume`` keeps its pre-revision meaning, and
-        ``result.final_resume`` is what was delivered.
+        verdict. ``generated_resume`` keeps its pre-revision meaning,
+        ``result.initial_quality`` keeps the judgement that triggered the
+        revision, and ``result.final_resume`` is what was delivered.
 
         Revision is skipped after a compilation failure: there is no page to
         measure, and the defect is in the document rather than its length.
@@ -162,6 +163,9 @@ class ResumePipeline:
                 compilation.pdf_path, compilation.tex_path, compilation
             )
 
+        # Held before the revision block below can overwrite ``quality``.
+        initial_quality = quality
+
         revision = None
         if self._revise and compilation is not None and not quality.passed:
             revision = self._reviser.revise(
@@ -187,6 +191,7 @@ class ResumePipeline:
             latex=latex,
             compilation=compilation,
             quality=quality,
+            initial_quality=initial_quality,
         )
 
     def run_from_file(

@@ -3,8 +3,8 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 017 (Revision Engine).
-Baseline: **1340 tests passing, 1 skipped** (1026 after task 016); 83 of those
+Status as of the end of task 018 (Reporter).
+Baseline: **1398 tests passing, 1 skipped** (1340 after task 017); 83 of those
 need a TeX distribution and skip when none is on PATH. Update this file at the end of each task; do not rewrite
 it.
 
@@ -24,7 +24,7 @@ Markdown Resume
   → pdflatex Compiler    ✅ 015
   → Quality Gate         ✅ 016
   → Revision Engine      ✅ 017
-  → Reporter             ⬜
+  → Reporter             ✅ 018
 ```
 
 **The reference chain.** This is the current, canonical data path — keep it up
@@ -48,6 +48,8 @@ PDF Compiler  →  resume.pdf
 Quality Gate  →  QualityGateResult
       ↓
 Revision / Shortening  →  a one-page Resume   (only when the gate failed)
+      ↓
+Reporter  →  report.md + changes.md + report.json   (side branch, no LLM)
 ```
 
 **The Markdown Serializer branches off the Resume Object; it is not a link in
@@ -1909,7 +1911,338 @@ resume into a `RevisionError`. It is a floor, and it belongs in `floors.py`
 with the rest.
 
 
+---
+
+## 10i. Reporter (task 018)
+
+`src/report/` — `exceptions.py`, `models.py`, `reconcile.py`, `gate.py`,
+`markdown.py`, `reporter.py`, `__init__.py`. The directory name matches the one
+`ARCHITECTURE.md` reserved; the class is `Reporter`, not the `ReportGenerator`
+of its Core Interfaces list, because every orchestrator here is named after its
+component and "generator" already means something else in this pipeline.
+
+```python
+Reporter().build(result: PipelineResult) -> Report
+Reporter().render_report(report) -> str      # report.md
+Reporter().render_changes(report) -> str     # changes.md
+Reporter().render_json(report) -> str        # report.json
+Reporter().write(report, directory) -> Dict[str, str]
+```
+
+No LLM, no provider parameter, no subprocess, no Markdown parsing, no mutation.
+`render()`/`write()` split follows `LatexRenderer`: the caller owns the run
+directory, and the three files land flat beside `generated.md` and
+`revision_trail.json`.
+
+**Its input is `PipelineResult`, not the task doc's eight arguments.** The
+result already carries every one of them — `mode`, `source_resume`,
+`job_analysis`, `resume_plan`, `generated_resume`, `quality`, `revision`, and
+`final_resume` as a property. Three names in the task doc's suggested signature
+do not exist in this repo at all: `Mode` is `PlanningMode`, there is no
+`RevisionTrail` model (the trail is `List[RevisionStep]`), and
+`quality_gate_results` did not exist — see below.
+
+### The plan is intent; the resume is outcome
+
+This is the whole reason `reconcile.py` exists, and the one thing a naive
+Reporter gets wrong. A `ResumePlan` records what the Planner *wanted*. The
+Generator then declines part of it (§10b): a `REMOVE` is cancelled unless a
+`GENERATE` funded it, a lopsided skill trade is cancelled, an emptied category
+is dropped. The Revision Engine then removes more content to reach one page.
+Reading the plan at face value states removals that never happened and misses
+removals nobody planned.
+
+The join is by **entity-id set membership** across the source, generated and
+final resumes, plus the `EntitySource` the Generator stamped. Both are recorded
+facts, so this is a join and not a judgement.
+
+| planned | in generated | in final | effective |
+|---|---|---|---|
+| REMOVE | yes | yes | `REMOVAL_CANCELLED` |
+| REMOVE | no | no | `REMOVED` |
+| KEEP | yes | yes | `KEPT` |
+| REWRITE | yes | yes | `REWRITTEN` |
+| anything | yes | no | `TRIMMED_FOR_PAGE_FIT` |
+| KEEP/REWRITE | no | no | `DROPPED_UNPLANNED` |
+
+`DROPPED_UNPLANNED` should never occur. It is reported rather than smoothed
+into `REMOVED` because it would mean a stage dropped an entity silently.
+
+**A `GENERATE` plan entry cannot be joined from the plan side**: it carries
+`project_id=None` / `category_id=None` by model invariant, so there is nothing
+to match on. The join runs the other way, off the id the Generator minted and
+the `EntitySource` it stamped. No pairing between a `GENERATE` entry and a
+resulting entity is ever invented.
+
+### `RevisionResult.gate_results` is new, and the report needed it
+
+The engine computed a full `QualityGateResult` on **every** attempt and kept
+only the latest on `_Run.quality`; `pipeline.py` then reassigned
+`quality = revision.quality`, so even the pre-revision verdict was lost. The
+trail's per-step `page_count`/`spill`/`passed` shows convergence but not *which
+check* failed, so the per-attempt, per-check history the task doc asks for was
+unbuildable.
+
+Two additive fields close it, with no behaviour change:
+
+- `RevisionResult.gate_results: List[QualityGateResult]` — appended in
+  `_attempt`, one per attempt, in order.
+- `PipelineResult.initial_quality: Optional[QualityGateResult]` — the verdict
+  that triggered the revision.
+
+The reported history is `[initial_quality] + revision.gate_results`. Note the
+engine numbers its attempts from 1 and so does the pipeline's own compile, so
+each attempt carries a `label` ("initial compile", "revision attempt 1") —
+without it a report shows two "attempt 1"s.
+
+`revision_trail.json` is unaffected: `_Run.write_trail` builds an explicit
+payload rather than dumping the result, so the nine gate results do not bloat
+the one artifact that actually gets read.
+
+### Checks are read, never re-decided
+
+`result.passed` is copied verbatim rather than recomputed from the per-check
+lines, so the report cannot disagree with the gate about the outcome. Each
+check's status comes from the issues themselves:
+
+| line | source |
+|---|---|
+| Compile | no `COMPILATION_FAILED` issue |
+| Page count | `metrics.page_count`; FAIL iff `INVALID_PAGE_COUNT` |
+| Overfull boxes | issue presence, count from `overfull_hbox_count` |
+| Missing glyphs | issue presence, count from `missing_glyph_count` |
+| Layout overlap | issue presence, count from `overlap_count` |
+| Rule/text collision | issue presence, count from `rule_collision_count` |
+| Orphan words | issue presence, count from `orphan_word_count` |
+
+**Severity comes from the issue, not from the check name.** Reading each
+issue's own `severity` means `ORPHAN_WORD` renders as a non-blocking WARNING
+with no special case, and cannot drift if `SEVERITY_BY_CODE` ever changes.
+
+**A check that never ran is not a check that passed.** A compilation failure
+returns a Stage 1 verdict with every geometry metric at zero, so overlap, rule
+collisions and orphans would read "0 findings" when no PDF was ever opened.
+Those render `NOT_REACHED`, gated on `stage_reached`. This is the same class of
+error as §10d's page-count-went-2→1: a metric that looks clean because the
+measurement never happened.
+
+### N:M bullets, so no diff
+
+`ARCHITECTURE.md` showed `changes.md` as a before/after line diff of one
+bullet. That is not buildable. The Generator rewrites a whole entity at once,
+so N source bullets map onto M new ones with no correspondence between them —
+the same reason task 011's `highlight_indices` would not have worked (§10b).
+`changes.md` lists `bullets_before` and `bullets_after` in full, unpaired, and
+diffs neither. Amended in `ARCHITECTURE.md` 1.5.
+
+Set diffs over *structured fields* are a different matter and are reported
+exactly: technologies, domains and skills added and removed, order-preserving,
+computed as list comprehensions rather than by iterating a `set()` — a `set()`
+would make the output order-unstable and break determinism.
+
+**"Metrics Added" and "Achievements Added" are not reported**, though
+`ARCHITECTURE.md` listed both. Deciding what counts as a metric or an
+achievement is a judgement, and the Reporter is forbidden from judging resume
+content. Logged in the Amendment Log rather than quietly skipped.
+
+### Determinism, and the test that nearly missed it
+
+No timestamps, no durations, no random ids — same rule as `QualityGateResult`
+and `RevisionResult`, and for the same reason: `first == second` has to hold.
+
+Two subtler hazards:
+
+- **`SectionPriority` serialises as `3`, not `"MEDIUM"`** (§10). `PlanEntry`
+  stores `priority` as the enum's *name*, and the raw plan is deliberately not
+  embedded in `report.json`. Pinned by a test asserting `"priority 3"` never
+  appears in `report.md`.
+- **Artifact paths are absolute and vary per run.** `RevisionSummary` stores
+  them relative to the run directory, derived from `trail_path`'s parent.
+  **A determinism test that builds twice into the same directory does not catch
+  this** — it needs two different roots, which is what
+  `test_two_run_directories_produce_the_same_json` does.
+
+### `live_run.py` no longer hand-rolls a report
+
+`10_run_summary.md` was ~60 lines of report logic inline in a script: quality
+verdict, revision table, soft failures. The Reporter subsumes all of it, and
+the script now writes `14_report.md`, `15_changes.md` and `16_report.json`.
+
+What stayed behind is `10_run_provenance.md`: resume path, JD path, model name,
+wall clock and per-call timings. **Those cannot go in the report** — they are
+exactly the non-deterministic fields the report must not carry.
+
+### Soft-failure notes are filed under the entity they name
+
+The Planner's and Generator's discarded-notes are prose strings, and they are
+the only record that part of the plan was declined. `attach_soft_failures`
+files each one under the entity whose **runtime id it names**, matched as a
+substring. That is safe because ids are unambiguous tokens — `skill_005` cannot
+be mistaken for anything else in a sentence — and the prose itself is never
+parsed. A note naming no id attaches to nothing and still reaches the reader
+through `report.md`'s soft-failures section.
+
+This is what makes a reconciled action actionable. The live backend run reports
+`skill_005 Concepts — planned REWRITE, effective REWRITTEN` with no visible
+change, which looks like a no-op until the two notes filed beneath it explain
+it:
+
+```text
+- skill_005: skill 'Secure Coding' names an activity, not a technology
+- skill category skill_005 ('Concepts'): removal of 'API Design', ... was
+  cancelled — only 3 skill(s) were available to replace them
+```
+
+That is §10b's "nothing is deleted unless something replaces it" and the
+lopsided-trade split, visible in the report for the first time: the plan asked
+to rename `skill_005` to *Software Engineering Practices*, and what actually
+happened is that `skill_005` was left intact and the incoming skills became a
+new `GENERATED` category, `skill_006`.
+
+### Confirmed live, 2026-09-03
+
+`backend_aggressive`, the richest trail of the six runs. Full chain, real
+provider, 75.2 s wall clock, five LLM calls, **1 page, passed**.
+
+The reported attempt history reproduces §10h's measurement exactly:
+
+| attempt | action | entity | pages | spill |
+|---|---|---|---|---|
+| 1 (initial compile) | — | — | 2 | 13 |
+| 2 | `REMOVE_BULLET` | `proj_001` | 2 | 7 |
+| 3 | `REMOVE_BULLET` | `proj_001` | 2 | 7 |
+| 4 | `REMOVE_BULLET` | `proj_003` | 2 | 7 |
+| 5 | `REMOVE_BULLET` | `proj_003` | 2 | 2 |
+| 6 | `REMOVE_SKILL_CATEGORY` | `skill_003` | 1 | 0 |
+
+`13 → 7 → 7 → 7 → 2 → 0`, including the three consecutive removals that free
+nothing. **A report that showed only the final verdict would make those three
+steps look like a defect**; the per-attempt history is what shows the
+subheading blocks moving as a unit.
+
+Three reconciliations in that run are the ones a plan-only report would get
+wrong:
+
+- `proj_002 SOCrates` — planned `REMOVE`, **REMOVED**. Honoured, because the
+  `GENERATE` funded it.
+- `skill_003 Databases` — planned `KEEP`, **TRIMMED_FOR_PAGE_FIT**. Removed by
+  the Revision Engine, not by the plan. §10h explains why it was the row that
+  went: lowest priority, last position.
+- `proj_003 Service Mesh Simulator` — **GENERATED**, reported as "created by
+  the Generator" rather than as a planned `GENERATE`, because the `GENERATE`
+  entry carries no id and the pairing does not exist.
+
+**All six pairings, 2026-09-03.** Re-run end to end through `scripts/live_run.py`
+after the Reporter shipped. Every one lands on one page and passes, and the
+reported spill progressions **reproduce §10h's table step for step**:
+
+| run | pages | attempts | spill progression | removals | LLM | generated | soft failures |
+|---|---|---|---|---|---|---|---|
+| backend_strict | 1 ✅ | 1 | `0` | 0 | 0 | 0 | 9 |
+| backend_aggressive | 1 ✅ | 6 | `13 → 7 → 7 → 7 → 2 → 0` | 5 | 0 | 4 | 3 |
+| cybersecurity_strict | 1 ✅ | 3 | `5 → 5 → 0` | 2 | 0 | 0 | 6 |
+| cybersecurity_aggressive | 1 ✅ | 6 | `16 → 14 → 12 → 9 → 5 → 0` | 5 | 0 | 2 | 3 |
+| fullstack_strict | 1 ✅ | 1 | `0` | 0 | 0 | 0 | 10 |
+| fullstack_aggressive | 1 ✅ | 3 | `7 → 7 → 0` | 2 | 0 | 1 | 3 |
+
+Wall clock 62.8–78.5 s, five LLM calls each, **zero** revision LLM calls across
+all six — §10h's "the deterministic path needs no model" holds again.
+
+**Four reconciliations a plan-only report would have stated falsely.** These are
+the cases that justify `reconcile.py` existing at all:
+
+- `cybersecurity_strict` — `skill_002 AI and Automation` planned `REMOVE`,
+  effective **`REMOVAL_CANCELLED`**. STRICT emits no `GENERATE` anywhere, so
+  nothing could fund the removal and the Generator cancelled it. A report
+  reading the plan at face value would claim the category was removed when it
+  is still on the delivered resume.
+- `cybersecurity_aggressive` — two `REMOVE`s, one `GENERATE`: `skill_001` was
+  removed and `skill_002` cancelled. Exactly §10b's "each successful GENERATE
+  funds exactly one REMOVE", visible in a report for the first time.
+- `backend_aggressive` — `skill_003 Databases` planned `KEEP`, effective
+  **`TRIMMED_FOR_PAGE_FIT`**. Removed by the Revision Engine, not by the plan,
+  for the reason §10h records: lowest priority, last position.
+- `fullstack_aggressive` — `proj_003 Vector RAG Pipeline` carries
+  `source: GENERATED` **and** effective `TRIMMED_FOR_PAGE_FIT`. The Generator
+  invented a project and the Revision Engine then deleted it to reach one page.
+
+**That last one is worth acting on, and nothing before the Reporter could see
+it.** A generation call was spent on a project that never reached the PDF. The
+plan, the trail and the final resume each hold one third of the story; only the
+reconciliation puts them together. Whether it is worth fixing is a *generation*
+question — the same shape as §10h's "generation can arrive already below a
+floor" — and the honest position is that one observation is not a pattern.
+
+Determinism held across three consecutive runs: every LLM reply came back
+byte-identical (6675 / 10254 / 307 / 2330 / 2302 chars — the same figures
+§10h recorded), and the three report files were identical each time.
+
+### Testing
+
+`tests/report/` — 58 tests, none skipped, no provider and no TeX distribution
+needed. That is unusual here: `tests/pipeline` and `tests/quality` both skip
+without pdflatex.
+
+Resume, plan, job-analysis and gate-verdict builders are **imported from the
+packages that already own them** — `make_resume`/`passing_result`/
+`failing_result` from `tests/revision/conftest.py`, `make_plan` from
+`tests/generator/conftest.py`, `make_job_analysis` from
+`tests/planner/conftest.py`. Cross-package conftest imports are new in this
+repo (`tests` is a package, so they resolve); a second copy of `make_resume`
+would have been one more thing to keep in step with the models. `skill_sizes=(4, 4)`
+is the default in `make_source_resume` because that is what makes the revision
+fixture's ids line up with the ids `make_plan` plans for.
+
+`test_engine_history.py` drives the **real** `RevisionEngine` with
+`StubCompiler` + `CountingGate` and asserts `gate_results` agrees step-for-step
+with the trail — the upstream change is verified through the engine, not just
+asserted on a hand-built model.
+
+The no-LLM invariant has no provider to fake, so it is checked where it can
+actually be broken: `test_the_package_makes_no_llm_call` scans every import
+line in `src/report/` for `provider`, `prompts`, `sampling` and `subprocess`.
+Same shape as `tests/revision/test_floors.py`'s "single home" test.
+
 ## 11. Known open items
+
+- **FIXED: nothing produced a report.** `src/report/` (§10i) now emits
+  `report.md`, `changes.md` and `report.json`, and `scripts/live_run.py` writes
+  them as `14_report.md` / `15_changes.md` / `16_report.json`. The ~60 lines of
+  report logic that used to sit inline in that script are gone; what stayed is
+  `10_run_provenance.md`, holding the wall clock, model name and per-call
+  timings that a deterministic report must not carry.
+
+- **NEW (task 018): still no CLI, and now three more artifacts nothing on the
+  command line can produce.** `ResumePipeline` plus `Reporter` is the whole
+  chain, and the only entry points remain Python and `scripts/live_run.py`.
+  This is the same gap §11 has recorded since task 013; the Reporter does not
+  widen it, but it does mean the report is only reachable from code. That
+  command is still what should trigger `src/cli/_common.py`.
+
+- **NEW (task 018): `EffectiveAction.DROPPED_UNPLANNED` has never been
+  observed.** It fires when an entity is absent from the generated resume
+  although no plan entry asked for its removal. There is no known path to it —
+  the planner guarantees total coverage and the generator only grows the resume
+  — so it exists as a tripwire. If it ever appears in a real report, a stage is
+  dropping entities silently and that is the bug to chase, not the report.
+
+- **NEW (task 018): the report describes the run, and cannot describe a run
+  that never finished.** `OnePageInfeasibleError` propagates out of the
+  pipeline, so there is no `PipelineResult` and therefore no report for the one
+  case a reader would most want explained. The evidence in that case is the
+  exception's own `pdf_path` and `trail_path` plus `revision_trail.json`.
+  Closing this would mean the pipeline catching that error and returning a
+  failed result, which is a change to task 017's contract, not to the Reporter.
+
+- **NEW (task 018): `report.json` embeds `JobAnalysis` whole but projects the
+  plan, and the asymmetry is deliberate.** `JobAnalysis` is flat, has no
+  free-text field and no int-valued enum, so embedding it avoids a second
+  representation to keep in step. `ResumePlan` cannot be embedded as-is:
+  `SectionPriority` is an `IntEnum` and serialises as `3` rather than
+  `"MEDIUM"` (§10), and the plan addresses entities by runtime id only, so it
+  cannot say which project `proj_002` is. `PlanEntry` therefore carries the
+  priority *name* and the entity's label. Do not "simplify" this by embedding
+  the plan.
 
 - **NEW: a crashed `live_run.py` leaves the previous run's artifacts looking
   current.** The output directory is keyed on resume stem + mode and is written

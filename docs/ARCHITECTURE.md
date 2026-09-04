@@ -14,6 +14,39 @@ This document is Frozen: implementation may not diverge from it, but the
 document itself may be corrected when it is found to describe something the
 project never built. Each entry below records such a correction.
 
+**1.5 — 2026-09-03**
+
+- *Reporter artifacts* — a run now produces **three** report files, not two:
+  `report.md`, `changes.md` and `report.json`. Reason: this document specified
+  only the two Markdown documents, and a machine-readable record was needed so
+  the report could be diffed and asserted on without parsing prose. Required by
+  `tasks/018-reporter.md`.
+- *`changes.md` is a structured change record, not a textual diff* — the
+  example in the Reports section shows a before/after line diff of one bullet.
+  The Reporter shows the source and final bullet lists side by side and diffs
+  neither. Reason: the Generator rewrites a whole entity at once, so N source
+  bullets map onto M new ones with no correspondence between them
+  (PROJECT_KNOWLEDGE §10b). A line diff would have to invent a pairing that
+  does not exist. Structured lineage — planner actions, the revision trail,
+  runtime entity ids and `EntitySource` — replaces it.
+- *"Metrics Added" and "Achievements Added" are not reported* — the `report.md`
+  example lists both. Technologies, domains and skills added or removed are
+  reported, as exact set diffs over structured fields. The other two are not,
+  because deciding what counts as a metric or an achievement is a judgement,
+  and the Reporter is explicitly forbidden from making judgements about resume
+  content — a decision like that belongs to the stage that owns the content.
+  The Generator already counts quantified bullets for its own purposes
+  (`_report_unquantified`).
+- *Reporter directory and interface names* — the reserved directory `report/`
+  is now built and holds `class Reporter`, not `ReportGenerator` as the Core
+  Interfaces list names it. Reason: every orchestrator in this project is named
+  after its component (`QualityGate`, `RevisionEngine`, `PDFCompiler`,
+  `LatexRenderer`), and `ReportGenerator` would additionally read as a
+  *generator*, which is a different stage in this pipeline.
+- *Quality Gate directory* — the reserved `quality_gate/` shipped as
+  `src/quality/` in task 016. Recorded here because the directory listing in
+  this document was never corrected at the time.
+
 **1.4 — 2026-08-31**
 
 - *Revision budget* — `max_revisions: 3` is now a cap on **LLM revision passes
@@ -328,8 +361,8 @@ resume-tailor/
         entity_ids.py
         vocabulary.py
 
-        quality_gate/               # not yet built
-        report/                     # not yet built
+        quality/                    # Quality Gate (named quality_gate/ above until 1.5)
+        report/                     # Reporter
 ```
 
 Corrections made in 1.1:

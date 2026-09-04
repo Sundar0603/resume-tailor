@@ -43,6 +43,13 @@ class PipelineResult(BaseModel):
     compilation: Optional[CompilationResult] = None
     quality: Optional[QualityGateResult] = None
 
+    #: The verdict on the *pre-revision* resume. ``quality`` above is the final
+    #: one, and a revision overwrites it, so without this field the judgement
+    #: that triggered the revision is unrecoverable -- and it is the first row
+    #: of any honest quality-gate history. Equal to ``quality`` when no
+    #: revision ran.
+    initial_quality: Optional[QualityGateResult] = None
+
     #: What the Revision Engine did, when one was wired in and the first
     #: judgement failed. ``None`` means no revision was attempted --
     #: either no reviser was supplied, or the resume already passed.

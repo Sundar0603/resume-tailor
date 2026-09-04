@@ -203,6 +203,13 @@ class RevisionResult(BaseModel):
     trail: List[RevisionStep] = Field(default_factory=list)
     compression_outcomes: List[CompressionOutcome] = Field(default_factory=list)
 
+    #: The gate's verdict on every attempt, in order. ``trail`` carries only
+    #: each step's ``page_count``/``spill``/``passed``, which is enough to see
+    #: convergence but not *which check* failed; the Reporter needs the full
+    #: per-attempt verdict to render a quality-gate history, and the engine
+    #: already computes one every attempt. Empty when nothing was attempted.
+    gate_results: List[QualityGateResult] = Field(default_factory=list)
+
     pdf_path: Optional[str] = None
     tex_path: Optional[str] = None
     trail_path: Optional[str] = None
