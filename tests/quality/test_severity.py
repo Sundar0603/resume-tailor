@@ -47,13 +47,18 @@ class TestTheMapping:
         for code in QualityIssueCode:
             assert code in SEVERITY_BY_CODE
 
-    def test_orphan_words_are_the_only_warning(self):
+    def test_the_warnings_are_exactly_the_two_cosmetic_findings(self):
+        # Pinned deliberately: adding a warning must be a decision, not a
+        # default. Everything else on the page blocks submission.
         warnings = [
             code
             for code, severity in SEVERITY_BY_CODE.items()
             if severity is QualitySeverity.WARNING
         ]
-        assert warnings == [QualityIssueCode.ORPHAN_WORD]
+        assert warnings == [
+            QualityIssueCode.ORPHAN_WORD,
+            QualityIssueCode.BULLET_SPACING_ANOMALY,
+        ]
 
     def test_a_broken_layout_always_blocks(self):
         for code in (

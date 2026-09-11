@@ -49,6 +49,33 @@ ORPHAN_PRECEDING_FILL_RATIO = 0.85
 BLOCK_LINE_SPACING_POINTS = 16.0
 BLOCK_INDENT_TOLERANCE_POINTS = 2.0
 
+# --------------------------------------------------------------------------
+# Bullet spacing
+# --------------------------------------------------------------------------
+# The glyph \labelitemi renders to, and how far inside its bullet a wrapped
+# continuation line sits. Measured across the nine recompiled resumes: real
+# continuations land at +9.27pt (148 of them), while section headings sit at
+# +2.37 and other structural rows at +2.07. 5.0 separates the two cleanly.
+#
+# Getting this wrong is not harmless: at +0.5 a heading is swallowed as a
+# continuation of the bullet above it, the run never breaks, and the next
+# section's first bullet is measured against the heading.
+BULLET_GLYPH = "•"
+BULLET_CONTINUATION_INDENT_POINTS = 5.0
+
+# Gap between two sibling bullets, measured from the last line of one to the
+# first line of the next. Calibrated after the \resumeItem stray-space fix:
+# 115 sibling gaps across the nine recompiled resumes give a median of 3.88
+# and a maximum of 7.36 -- that maximum being the structural project-title to
+# first-sub-bullet step, which every document shows and which is not a defect.
+#
+# The defect population is the phantom empty line: 15.99 in four of the nine
+# before the fix, and 14.57 / 14.62 in the two output/runs finals that first
+# exposed it. The excess is one \baselineskip (11.95pt), so nothing can land
+# between 7.36 and 14.57. 10.0 sits in that empty band, comfortably clear of
+# the legitimate 7.36 step.
+BULLET_GAP_MAX_POINTS = 10.0
+
 # A \titlerule spans the text column; a link underline does not.
 RULE_MIN_WIDTH_RATIO = 0.5
 # The heading sits immediately above its rule.
@@ -194,6 +221,75 @@ def find_orphans(pages: List[PageGeometry]) -> List[TextLine]:
                 continue
             orphans.append(last)
     return orphans
+
+
+def _bullet_items(lines: List[TextLine]) -> List[List[List[TextLine]]]:
+    """
+    Group a page's lines into bullet items, in reading order.
+
+    An item opens on a line beginning with the bullet glyph and absorbs the
+    wrapped continuation lines that follow it at a deeper indent. Any other
+    line -- a heading, a rule caption, a skills row -- closes the run, so a
+    heading is never measured against the bullet beneath it.
+
+    Returned as runs rather than one flat list: only items inside the same run
+    are siblings, and comparing across a run boundary would pair the last
+    bullet of one list with the first of the next.
+    """
+    runs: List[List[List[TextLine]]] = []
+    current: List[List[TextLine]] = []
+
+    for line in sorted(lines, key=lambda item: -item.y0):
+        if line.text.lstrip().startswith(BULLET_GLYPH):
+            current.append([line])
+        elif (
+            current
+            and line.x0 > current[-1][0].x0 + BULLET_CONTINUATION_INDENT_POINTS
+            and line.y0 < current[-1][-1].y0
+        ):
+            current[-1].append(line)
+        else:
+            if len(current) > 1:
+                runs.append(current)
+            current = []
+
+    if len(current) > 1:
+        runs.append(current)
+    return runs
+
+
+def find_bullet_spacing_anomalies(
+    pages: List[PageGeometry],
+) -> List[Tuple[TextLine, TextLine, float]]:
+    """
+    Sibling bullets separated by more space than the list's own rhythm.
+
+    Returns ``(preceding_item_last_line, following_item_first_line, gap)``.
+
+    The defect this catches is a phantom empty line: when a bullet's final line
+    fills the measure exactly, a stray space token after it cannot fit, and TeX
+    emits an extra line one ``\\baselineskip`` tall. It carries no glyphs, so
+    nothing in the compile log or the overlap check sees it -- only the
+    distance between the two bullets gives it away.
+
+    Only items at the same indent within one run are compared, so the wider
+    structural gap between a project title and its first sub-bullet is not a
+    finding.
+    """
+    found = []
+    for page in pages:
+        for run in _bullet_items(page.lines):
+            for preceding, following in zip(run, run[1:]):
+                if (
+                    abs(following[0].x0 - preceding[0].x0)
+                    > BLOCK_INDENT_TOLERANCE_POINTS
+                ):
+                    continue
+                gap = preceding[-1].y0 - following[0].y1
+                if gap <= BULLET_GAP_MAX_POINTS:
+                    continue
+                found.append((preceding[-1], following[0], gap))
+    return found
 
 
 def attribute_sections(

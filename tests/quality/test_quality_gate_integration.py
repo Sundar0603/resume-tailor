@@ -27,6 +27,13 @@ pytestmark = pytest.mark.skipif(
 BROKEN_FIXTURE = "tests/fixtures/latex/overlapping_bullets.tex"
 CANONICAL = "content/backend_resume.md"
 
+# A canonical that still runs past one page, so the page-count and overflow
+# paths keep a real fixture. backend_resume.md used to serve that role: it
+# spilled a single line onto page two, and the \resumeItem stray-space fix --
+# which removed the phantom empty lines that were padding it -- pulled that
+# line back. Same 60 text lines before and after, so nothing was dropped.
+OVERFLOWING = "content/cybersecurity_resume.md"
+
 
 def compile_source(latex, tmp_path, name="resume"):
     return PDFCompiler().compile(latex, output_directory=str(tmp_path), job_name=name)
@@ -81,15 +88,25 @@ class TestARealResume:
         result = evaluate(LatexRenderer().render(resume), tmp_path)
         assert result.metrics.total_text_lines > 0
 
-    def test_it_runs_to_two_pages_today(self, tmp_path):
-        # The honest number: the masters reach one page only through hand-tuned
-        # spacing the renderer does not invent. Fitting is the trimmer's job.
+    def test_it_now_fits_one_page(self, tmp_path):
+        # It reached two pages until the \resumeItem stray-space fix. A bullet
+        # whose last line filled the measure left a space token that could not
+        # fit, and TeX emitted a phantom empty line one \baselineskip tall;
+        # enough of those pushed a line onto page two. Fitting is still the
+        # trimmer's job in general -- this one just stopped needing it.
         resume = ResumeParser().parse(CANONICAL)
         result = evaluate(LatexRenderer().render(resume), tmp_path)
-        assert result.metrics.page_count == 2
+        assert result.metrics.page_count == 1
+
+    def test_it_lost_no_content_becoming_one_page(self, tmp_path):
+        # Guards the obvious wrong way to reach one page. Measured at 60 text
+        # lines both before and after the fix.
+        resume = ResumeParser().parse(CANONICAL)
+        result = evaluate(LatexRenderer().render(resume), tmp_path)
+        assert result.metrics.total_text_lines == 60
 
     def test_a_two_page_resume_fails_on_page_count(self, tmp_path):
-        resume = ResumeParser().parse(CANONICAL)
+        resume = ResumeParser().parse(OVERFLOWING)
         result = evaluate(LatexRenderer().render(resume), tmp_path)
         assert QualityIssueCode.INVALID_PAGE_COUNT in [i.code for i in result.issues]
 
@@ -99,9 +116,15 @@ class TestARealResume:
         assert result.metrics.overlap_count == 0
 
     def test_the_overflowing_sections_are_named(self, tmp_path):
-        resume = ResumeParser().parse(CANONICAL)
+        resume = ResumeParser().parse(OVERFLOWING)
         result = evaluate(LatexRenderer().render(resume), tmp_path)
         assert result.metrics.overflowing_sections
+
+    def test_a_canonical_resume_reports_no_bullet_spacing_anomaly(self, tmp_path):
+        # The phantom empty line, as the gate now sees it.
+        resume = ResumeParser().parse(CANONICAL)
+        result = evaluate(LatexRenderer().render(resume), tmp_path)
+        assert result.metrics.bullet_spacing_anomaly_count == 0
 
     def test_evaluation_is_deterministic_over_real_artifacts(self, tmp_path):
         resume = ResumeParser().parse(CANONICAL)

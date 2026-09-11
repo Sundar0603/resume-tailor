@@ -29,6 +29,12 @@ class JobAnalysis(BaseModel):
 
     company: Optional[str] = None
     role: str = Field(min_length=1)
+    #: True when `role` was chosen from the fallback list rather than read
+    #: out of the job description. Set by the analyzer, never by the model:
+    #: a model that reported on its own guessing would be guessing twice.
+    #: Downstream stages use the role either way; only presentation cares,
+    #: so that a report never shows an inferred title as a stated one.
+    role_inferred: bool = False
     seniority: Optional[str] = None
     required_skills: List[str]
     preferred_skills: List[str] = []

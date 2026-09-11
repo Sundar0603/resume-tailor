@@ -62,7 +62,14 @@ def _run_information(report: Report) -> List[str]:
             identity.resume, identity.template, identity.version
         ),
         "- Candidate: {0}".format(identity.name),
-        "- Target role: **{0}**".format(report.target_role or "not stated"),
+        "- Target role: **{0}**{1}".format(
+            report.target_role or "not stated",
+            # The job description never named a role; the analyzer chose
+            # one. A report that hid that would read as a quoted title.
+            " (inferred - not stated in the job description)"
+            if report.job_analysis.role_inferred
+            else "",
+        ),
         "",
     ]
 

@@ -56,7 +56,10 @@ SCALAR_FIELDS = (
 #: ways; all of them collapse to None.
 NULLABLE_SCALAR_FIELDS = ("company", "seniority")
 
-_NULL_EQUIVALENTS = frozenset(
+#: Strings a model uses to mean "absent". Public because the analyzer
+#: applies the same vocabulary to `role`, where absence is an error
+#: rather than a None.
+NULL_EQUIVALENTS = frozenset(
     {
         "",
         "-",
@@ -150,7 +153,7 @@ def _canonical_scalar(value: Any, nullable: bool) -> Any:
 
     cleaned = _strip_terminal_period(_clean_text(value))
 
-    if nullable and cleaned.casefold() in _NULL_EQUIVALENTS:
+    if nullable and cleaned.casefold() in NULL_EQUIVALENTS:
         return None
 
     return cleaned

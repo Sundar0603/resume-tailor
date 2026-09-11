@@ -44,6 +44,11 @@ _STAGE_2_CHECKS = (
     ("Layout overlap", QualityIssueCode.TEXT_OVERLAP, "overlap_count"),
     ("Rule/text collision", QualityIssueCode.RULE_TEXT_COLLISION, "rule_collision_count"),
     ("Orphan words", QualityIssueCode.ORPHAN_WORD, "orphan_word_count"),
+    (
+        "Bullet spacing",
+        QualityIssueCode.BULLET_SPACING_ANOMALY,
+        "bullet_spacing_anomaly_count",
+    ),
 )
 
 #: Label for the pipeline's own compile, which happens before any revision.

@@ -12,10 +12,12 @@ and never calls an LLM. Shortening belongs to the Revision Engine.
 """
 
 from .checks import (
+    BULLET_GAP_MAX_POINTS,
     ORPHAN_MAX_WORDS,
     ORPHAN_PRECEDING_FILL_RATIO,
     OVERLAP_TOLERANCE_POINTS,
     attribute_sections,
+    find_bullet_spacing_anomalies,
     find_orphans,
     find_overlaps,
     find_rule_collisions,
@@ -64,12 +66,14 @@ __all__ = [
     # Checks
     "find_overlaps",
     "find_orphans",
+    "find_bullet_spacing_anomalies",
     "find_rule_collisions",
     "attribute_sections",
     "measure_overflow",
     "OVERLAP_TOLERANCE_POINTS",
     "ORPHAN_MAX_WORDS",
     "ORPHAN_PRECEDING_FILL_RATIO",
+    "BULLET_GAP_MAX_POINTS",
     # Log analysis
     "analyse_log",
     "read_log",

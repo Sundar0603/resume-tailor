@@ -17,15 +17,36 @@ that reach the compiler need a TeX distribution.
 """
 
 import shutil
+from pathlib import Path
 
 import pytest
 
+from src.compiler.models import CompilationResult
 from src.compiler.pdf_compiler import PDFCompiler
 from src.parser import ResumeParser
 from src.parser.models import EntitySource
 from src.pipeline import MARKDOWN_FILENAME, ResumePipeline
+from src.pipeline.exceptions import FinalResumeValidationError
+from src.pipeline.pipeline import (
+    STAGE_ANALYZE,
+    STAGE_COMPILE,
+    STAGE_GENERATE,
+    STAGE_PLAN,
+    STAGE_QUALITY,
+    STAGE_RENDER,
+    STAGE_REVISE,
+    STAGE_VALIDATE,
+)
 from src.planner.models import PlanningMode
 from src.quality.models import QualityIssueCode
+from src.quality.quality_gate import QualityGate
+from src.revision.models import RevisionResult
+from src.revision.revision_engine import RevisionEngine
+from src.validation.codes import ValidationCode
+from src.validation.models import ValidationIssue, ValidationResult
+from src.validation.validator import ResumeValidator
+
+from tests.revision.conftest import failing_result, passing_result
 
 from .conftest import ScriptedProvider
 
@@ -41,15 +62,26 @@ def source_resume():
     return ResumeParser().parse(SOURCE)
 
 
-def run(tmp_path, rewrite=True, mode=PlanningMode.STRICT, compiler=None, revise=True):
+def run(
+    tmp_path,
+    rewrite=True,
+    mode=PlanningMode.STRICT,
+    compiler=None,
+    revise=True,
+    on_stage=None,
+    validator=None,
+):
     resume = source_resume()
     provider = ScriptedProvider(resume, rewrite=rewrite)
-    pipeline = ResumePipeline(provider, compiler=compiler, revise=revise)
+    pipeline = ResumePipeline(
+        provider, compiler=compiler, revise=revise, validator=validator
+    )
     result = pipeline.run(
         source_resume=resume,
         job_description=JOB_DESCRIPTION,
         mode=mode,
         output_directory=str(tmp_path),
+        on_stage=on_stage,
     )
     return result, provider
 
@@ -268,3 +300,277 @@ class TestTheRevisionEngineIsWiredIn:
         reply = ScriptedProvider(source_resume()).generate(prompt)
         assert "proj_001:bullet_1" in reply
         assert "40%" in reply
+
+
+class TestStageAnnouncements:
+    """
+    ``on_stage`` exists so a CLI can report progress across a run that takes a
+    minute or more. It is announcement only: the pipeline holds no display
+    state and prints nothing, so what these tests pin is *which* stages fire
+    and in what order.
+    """
+
+    def _stages(self, tmp_path, **kwargs):
+        seen = []
+        result, _ = run(tmp_path, on_stage=seen.append, **kwargs)
+        return result, seen
+
+    @needs_tex
+    def test_the_stages_arrive_in_pipeline_order(self, tmp_path):
+        _, seen = self._stages(tmp_path)
+        assert seen[:6] == [
+            STAGE_ANALYZE,
+            STAGE_PLAN,
+            STAGE_GENERATE,
+            STAGE_RENDER,
+            STAGE_COMPILE,
+            STAGE_QUALITY,
+        ]
+
+    @needs_tex
+    def test_every_announced_stage_is_a_known_key(self, tmp_path):
+        _, seen = self._stages(tmp_path)
+        known = {
+            STAGE_ANALYZE,
+            STAGE_PLAN,
+            STAGE_GENERATE,
+            STAGE_RENDER,
+            STAGE_COMPILE,
+            STAGE_QUALITY,
+            STAGE_REVISE,
+            STAGE_VALIDATE,
+        }
+        assert set(seen) <= known
+
+    @needs_tex
+    def test_revision_is_announced_only_when_it_runs(self, tmp_path):
+        # A passing run that still printed "Revising..." would describe work
+        # nobody did.
+        result, seen = self._stages(tmp_path)
+        assert (STAGE_REVISE in seen) is (result.revision is not None)
+
+    @needs_tex
+    def test_validation_follows_revision_and_never_precedes_it(self, tmp_path):
+        result, seen = self._stages(tmp_path)
+        if result.revision is None:
+            assert STAGE_VALIDATE not in seen
+        else:
+            assert seen.index(STAGE_VALIDATE) > seen.index(STAGE_REVISE)
+
+    def test_a_failed_compile_announces_the_verdict_but_not_revision(self, tmp_path):
+        # Offline: this is the one announcement path that needs no TeX.
+        _, seen = self._stages(tmp_path, compiler=_never_compiles())
+        assert STAGE_QUALITY in seen
+        assert STAGE_REVISE not in seen
+
+    def test_the_callback_is_optional(self, tmp_path):
+        # Every other test in this file runs without one; this states it.
+        result, _ = run(tmp_path, compiler=_never_compiles(), on_stage=None)
+        assert result.quality is not None
+
+
+class _RecordingValidator(ResumeValidator):
+    """Records every call and can be told to report the resume invalid."""
+
+    def __init__(self, valid=True):
+        super().__init__()
+        self.calls = []
+        self._valid = valid
+
+    def validate(self, *, source_resume, generated_resume, mode="STRICT"):
+        self.calls.append((source_resume, generated_resume, mode))
+        if self._valid:
+            return super().validate(
+                source_resume=source_resume,
+                generated_resume=generated_resume,
+                mode=mode,
+            )
+        return ValidationResult(
+            is_valid=False,
+            errors=[
+                ValidationIssue(
+                    code=ValidationCode.MISSING_SUMMARY,
+                    message="deliberately rejected by the test",
+                )
+            ],
+        )
+
+
+class TestTheRevisedResumeIsRevalidated:
+    """
+    The Generator validates its own output, so an unrevised resume is not
+    checked twice. Revision is the one stage that changes a resume afterwards,
+    and it checks only its own floors -- never the Validator.
+
+    ``src/revision/floors.py`` sits strictly above the Validator's minimums, so
+    this should never fire on real content. It is a tripwire: if it raises, a
+    floor stopped covering a Validator rule.
+    """
+
+    @needs_tex
+    def test_a_revised_resume_is_validated_against_the_source(self, tmp_path):
+        validator = _RecordingValidator()
+        result, _ = run(tmp_path, validator=validator)
+        if result.revision is None:
+            pytest.skip("this resume passed without revision")
+        assert len(validator.calls) == 1
+        source, revised, mode = validator.calls[0]
+        assert source is result.source_resume
+        assert revised is result.revision.resume
+        assert mode is PlanningMode.STRICT
+
+    @needs_tex
+    def test_an_unrevised_run_is_not_validated_twice(self, tmp_path):
+        validator = _RecordingValidator()
+        result, _ = run(tmp_path, revise=False, validator=validator)
+        assert result.revision is None
+        assert validator.calls == []
+
+    def test_a_compilation_failure_is_not_validated(self, tmp_path):
+        validator = _RecordingValidator()
+        run(tmp_path, compiler=_never_compiles(), validator=validator)
+        assert validator.calls == []
+
+    @needs_tex
+    def test_an_invalid_revised_resume_stops_the_run(self, tmp_path):
+        validator = _RecordingValidator(valid=False)
+        try:
+            result, _ = run(tmp_path, validator=validator)
+        except FinalResumeValidationError as exc:
+            assert "deliberately rejected by the test" in str(exc)
+            return
+        if result.revision is not None:
+            raise AssertionError("a rejected revised resume should have raised")
+        pytest.skip("this resume passed without revision")
+
+
+# ---------------------------------------------------------------------------
+# A forced revision, offline
+# ---------------------------------------------------------------------------
+#
+# The backend fixture fits on one page, so every revision-dependent test above
+# skips and the revise -> validate wiring is never actually exercised. These
+# stubs force the branch with no TeX and no LLM: a compiler that reports
+# success, a gate that reports failure, and an engine that returns a resume.
+# The engine's own behaviour is covered in ``tests/revision/``; what is under
+# test here is only that the pipeline hands its output on correctly.
+
+
+class _AlwaysCompiles(PDFCompiler):
+    """Reports a successful compile without running an engine."""
+
+    def compile(self, latex_source, output_directory=None, job_name="resume"):
+        directory = Path(output_directory)
+        directory.mkdir(parents=True, exist_ok=True)
+        tex = directory / f"{job_name}.tex"
+        tex.write_text(latex_source, encoding="utf-8")
+        log = directory / f"{job_name}.log"
+        log.write_text("stub log\n", encoding="utf-8")
+        pdf = directory / f"{job_name}.pdf"
+        pdf.write_bytes(b"%PDF-1.4\n")
+        return CompilationResult(
+            pdf_path=str(pdf),
+            log_path=str(log),
+            tex_path=str(tex),
+            engine="stub",
+            exit_code=0,
+            duration_seconds=0.0,
+        )
+
+
+class _AlwaysFailsTheGate(QualityGate):
+    """A gate whose verdict is always two pages."""
+
+    def evaluate(self, pdf_path, latex_path, compiler_result):
+        return failing_result()
+
+
+class _StubReviser(RevisionEngine):
+    """Returns a shortened resume that clears the gate, without compiling."""
+
+    def __init__(self):
+        super().__init__(provider=None)
+        self.calls = []
+
+    def revise(
+        self,
+        *,
+        source_resume,
+        current_resume,
+        quality_result,
+        output_directory="output/runs",
+        job_name="resume",
+    ):
+        self.calls.append(current_resume)
+        revised = current_resume.model_copy(deep=True)
+        return RevisionResult(
+            resume=revised,
+            quality=passing_result(),
+            revised=True,
+            attempts=1,
+            deterministic_steps=1,
+            compression_passes=0,
+            llm_calls=0,
+        )
+
+
+def forced_revision_run(tmp_path, validator=None, on_stage=None):
+    """Run the chain with the revision branch guaranteed to be taken."""
+    resume = source_resume()
+    provider = ScriptedProvider(resume, rewrite=True)
+    reviser = _StubReviser()
+    pipeline = ResumePipeline(
+        provider,
+        compiler=_AlwaysCompiles(),
+        quality_gate=_AlwaysFailsTheGate(),
+        reviser=reviser,
+        validator=validator,
+    )
+    result = pipeline.run(
+        source_resume=resume,
+        job_description=JOB_DESCRIPTION,
+        mode=PlanningMode.STRICT,
+        output_directory=str(tmp_path),
+        on_stage=on_stage,
+    )
+    return result, reviser
+
+
+class TestTheRevisionBranchIsTaken:
+    def test_the_engine_receives_the_generated_resume(self, tmp_path):
+        result, reviser = forced_revision_run(tmp_path)
+        assert reviser.calls == [result.generated_resume]
+
+    def test_the_final_verdict_replaces_the_initial_one(self, tmp_path):
+        result, _ = forced_revision_run(tmp_path)
+        assert result.initial_quality.passed is False
+        assert result.quality.passed is True
+        assert result.passed is True
+
+    def test_both_stages_are_announced(self, tmp_path):
+        seen = []
+        forced_revision_run(tmp_path, on_stage=seen.append)
+        assert seen.index(STAGE_VALIDATE) == seen.index(STAGE_REVISE) + 1
+
+    def test_the_revised_resume_is_validated_against_the_source(self, tmp_path):
+        validator = _RecordingValidator()
+        result, _ = forced_revision_run(tmp_path, validator=validator)
+        assert len(validator.calls) == 1
+        source, revised, mode = validator.calls[0]
+        assert source is result.source_resume
+        assert revised is result.revision.resume
+        assert mode is PlanningMode.STRICT
+
+    def test_an_invalid_revised_resume_stops_the_run(self, tmp_path):
+        validator = _RecordingValidator(valid=False)
+        with pytest.raises(FinalResumeValidationError):
+            forced_revision_run(tmp_path, validator=validator)
+
+    def test_the_failure_names_the_validation_error(self, tmp_path):
+        validator = _RecordingValidator(valid=False)
+        try:
+            forced_revision_run(tmp_path, validator=validator)
+        except FinalResumeValidationError as exc:
+            assert "deliberately rejected by the test" in str(exc)
+        else:
+            raise AssertionError("expected FinalResumeValidationError")

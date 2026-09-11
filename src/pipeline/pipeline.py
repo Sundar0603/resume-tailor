@@ -41,27 +41,46 @@ for that case and the run should end with a judgement rather than a traceback.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional, Tuple
 
 from src.analyzer.analyzer import JDAnalyzer
 from src.analyzer.provider import LLMProvider
 from src.compiler.exceptions import CompilationFailedError
+from src.compiler.models import CompilationResult
 from src.compiler.pdf_compiler import PDFCompiler
 from src.generator.generator import ResumeGenerator
 from src.parser.models import Resume
 from src.parser.resume_parser import ResumeParser
 from src.planner.models import PlanningMode
 from src.planner.planner import ResumePlanner
+from src.quality.models import QualityGateResult
 from src.quality.quality_gate import QualityGate
 from src.renderer.latex_renderer import LatexRenderer
 from src.renderer.markdown_serializer import MarkdownSerializer
+from src.revision.models import RevisionResult
 from src.revision.revision_engine import RevisionEngine
+from src.validation.validator import ResumeValidator
 
+from .exceptions import FinalResumeValidationError
 from .models import PipelineResult
 
 DEFAULT_OUTPUT_DIRECTORY = "output/runs"
 DEFAULT_JOB_NAME = "resume"
 MARKDOWN_FILENAME = "generated.md"
+
+# Stage keys handed to ``run``'s optional ``on_stage`` callback, announced
+# *before* each stage begins. The pipeline never prints and never tracks
+# completion -- a caller that wants a tick per finished stage closes the
+# previous line when the next announcement arrives. Keys, not sentences, so
+# the wording belongs to whoever is displaying them.
+STAGE_ANALYZE = "analyze"
+STAGE_PLAN = "plan"
+STAGE_GENERATE = "generate"
+STAGE_RENDER = "render"
+STAGE_COMPILE = "compile"
+STAGE_QUALITY = "quality"
+STAGE_REVISE = "revise"
+STAGE_VALIDATE = "validate"
 
 
 class ResumePipeline:
@@ -74,6 +93,7 @@ class ResumePipeline:
         quality_gate: Optional[QualityGate] = None,
         compiler: Optional[PDFCompiler] = None,
         reviser: Optional[RevisionEngine] = None,
+        validator: Optional[ResumeValidator] = None,
         revise: bool = True,
     ) -> None:
         """
@@ -86,7 +106,7 @@ class ResumePipeline:
             run cannot silently mix models between stages.
         template_directory : str
             Where the frozen LaTeX templates live.
-        quality_gate, compiler : optional
+        quality_gate, compiler, reviser, validator : optional
             Injected for tests, and so a caller can tune the compile timeout or
             the gate's tolerances without this module growing knobs for them.
         """
@@ -108,7 +128,14 @@ class ResumePipeline:
                 quality_gate=self._gate,
             )
         )
+        self._validator = validator if validator is not None else ResumeValidator()
         self._revise = revise
+
+    @staticmethod
+    def _announce(stage: str, on_stage: Optional[Callable[[str], None]]) -> None:
+        """Tell the caller a stage is starting. A no-op when none was given."""
+        if on_stage is not None:
+            on_stage(stage)
 
     def run(
         self,
@@ -117,6 +144,7 @@ class ResumePipeline:
         mode: PlanningMode = PlanningMode.AGGRESSIVE,
         output_directory: str = DEFAULT_OUTPUT_DIRECTORY,
         job_name: str = DEFAULT_JOB_NAME,
+        on_stage: Optional[Callable[[str], None]] = None,
     ) -> PipelineResult:
         """
         Run the full chain and return every intermediate artifact.
@@ -134,9 +162,19 @@ class ResumePipeline:
         Revision is skipped after a compilation failure: there is no page to
         measure, and the defect is in the document rather than its length.
         A ``RevisionError`` propagates like any other stage exception.
+
+        ``on_stage`` is called with one of the ``STAGE_*`` keys before each
+        stage begins, so a CLI can report progress across a run that takes a
+        minute or more. It is announcement only: the pipeline holds no display
+        state and prints nothing.
         """
+        self._announce(STAGE_ANALYZE, on_stage)
         job_analysis = self._analyzer.analyze(job_description)
+
+        self._announce(STAGE_PLAN, on_stage)
         resume_plan = self._planner.plan(source_resume, job_analysis, mode)
+
+        self._announce(STAGE_GENERATE, on_stage)
         generated = self._generator.generate(
             source_resume=source_resume,
             job_analysis=job_analysis,
@@ -144,6 +182,7 @@ class ResumePipeline:
             mode=mode,
         )
 
+        self._announce(STAGE_RENDER, on_stage)
         markdown = self._serializer.serialize(generated)
         latex = self._renderer.render(generated)
 
@@ -151,30 +190,24 @@ class ResumePipeline:
         destination.mkdir(parents=True, exist_ok=True)
         (destination / MARKDOWN_FILENAME).write_text(markdown, encoding="utf-8")
 
-        compilation = None
-        try:
-            compilation = self._compiler.compile(
-                latex, output_directory=output_directory, job_name=job_name
-            )
-        except CompilationFailedError as failure:
-            quality = self._gate.evaluate_compilation_failure(failure)
-        else:
-            quality = self._gate.evaluate(
-                compilation.pdf_path, compilation.tex_path, compilation
-            )
+        compilation, quality = self._compile_and_judge(
+            latex, output_directory, job_name, on_stage
+        )
 
         # Held before the revision block below can overwrite ``quality``.
         initial_quality = quality
 
-        revision = None
-        if self._revise and compilation is not None and not quality.passed:
-            revision = self._reviser.revise(
-                source_resume=source_resume,
-                current_resume=generated,
-                quality_result=quality,
-                output_directory=output_directory,
-                job_name=job_name,
-            )
+        revision = self._revise_if_needed(
+            source_resume=source_resume,
+            generated=generated,
+            quality=quality,
+            compiled=compilation is not None,
+            mode=mode,
+            output_directory=output_directory,
+            job_name=job_name,
+            on_stage=on_stage,
+        )
+        if revision is not None:
             quality = revision.quality
 
         return PipelineResult(
@@ -194,6 +227,100 @@ class ResumePipeline:
             initial_quality=initial_quality,
         )
 
+    def _compile_and_judge(
+        self,
+        latex: str,
+        output_directory: str,
+        job_name: str,
+        on_stage: Optional[Callable[[str], None]],
+    ) -> Tuple[Optional[CompilationResult], QualityGateResult]:
+        """
+        Compile the LaTeX and return the gate's verdict on the result.
+
+        Compilation failure is not raised. The Quality Gate has an entry point
+        for exactly this case -- it reads the log the compiler preserved before
+        raising, and opens no PDF because there is none -- so the run ends in a
+        judgement rather than a traceback, with ``compilation`` left ``None``.
+        """
+        self._announce(STAGE_COMPILE, on_stage)
+        try:
+            compilation = self._compiler.compile(
+                latex, output_directory=output_directory, job_name=job_name
+            )
+        except CompilationFailedError as failure:
+            self._announce(STAGE_QUALITY, on_stage)
+            return None, self._gate.evaluate_compilation_failure(failure)
+
+        self._announce(STAGE_QUALITY, on_stage)
+        return compilation, self._gate.evaluate(
+            compilation.pdf_path, compilation.tex_path, compilation
+        )
+
+    def _revise_if_needed(
+        self,
+        *,
+        source_resume: Resume,
+        generated: Resume,
+        quality: QualityGateResult,
+        compiled: bool,
+        mode: PlanningMode,
+        output_directory: str,
+        job_name: str,
+        on_stage: Optional[Callable[[str], None]],
+    ) -> Optional[RevisionResult]:
+        """
+        Shorten the resume to one page, when the gate says it does not fit.
+
+        Returns ``None`` when no revision ran, which is the caller's signal to
+        keep the pre-revision verdict.
+
+        Revision is skipped after a compilation failure: there is no page to
+        measure, and the defect is in the document rather than its length.
+        """
+        if not (self._revise and compiled and not quality.passed):
+            return None
+
+        self._announce(STAGE_REVISE, on_stage)
+        revision = self._reviser.revise(
+            source_resume=source_resume,
+            current_resume=generated,
+            quality_result=quality,
+            output_directory=output_directory,
+            job_name=job_name,
+        )
+
+        self._announce(STAGE_VALIDATE, on_stage)
+        self._validate_revised(source_resume, revision.resume, mode)
+        return revision
+
+    def _validate_revised(
+        self, source_resume: Resume, revised: Resume, mode: PlanningMode
+    ) -> None:
+        """
+        Re-validate what the Revision Engine returned, against the source.
+
+        The Generator already validates its own output, so an unrevised resume
+        is not checked twice. Revision is the one stage that changes a resume
+        afterwards -- it deletes bullets, skills and whole projects -- and it
+        checks only its own floors, never the Validator.
+
+        ``src/revision/floors.py`` sits strictly above the Validator's
+        minimums, so this is a tripwire rather than an expected failure. If it
+        raises, a floor stopped covering a Validator rule and that is the bug.
+        """
+        result = self._validator.validate(
+            source_resume=source_resume,
+            generated_resume=revised,
+            mode=mode,
+        )
+        if not result.is_valid:
+            detail = "; ".join(
+                f"{issue.code.value}: {issue.message}" for issue in result.errors
+            )
+            raise FinalResumeValidationError(
+                f"The revised resume failed validation: {detail}"
+            )
+
     def run_from_file(
         self,
         resume_path: str,
@@ -201,6 +328,7 @@ class ResumePipeline:
         mode: PlanningMode = PlanningMode.AGGRESSIVE,
         output_directory: str = DEFAULT_OUTPUT_DIRECTORY,
         job_name: str = DEFAULT_JOB_NAME,
+        on_stage: Optional[Callable[[str], None]] = None,
     ) -> PipelineResult:
         """Parse a Markdown resume and a job description from disk, then run."""
         return self.run(
@@ -209,4 +337,5 @@ class ResumePipeline:
             mode=mode,
             output_directory=output_directory,
             job_name=job_name,
+            on_stage=on_stage,
         )

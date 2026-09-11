@@ -86,5 +86,23 @@ class PipelineResult(BaseModel):
 
     @property
     def pdf_path(self) -> Optional[str]:
-        """The compiled PDF, when compilation succeeded."""
+        """
+        The *pre-revision* compiled PDF, when compilation succeeded.
+
+        Paired with ``generated_resume``, not with ``final_resume``. A caller
+        that wants the file to hand to a human wants ``final_pdf_path``.
+        """
         return self.compilation.pdf_path if self.compilation else None
+
+    @property
+    def final_pdf_path(self) -> Optional[str]:
+        """
+        The PDF that was actually delivered.
+
+        The Revision Engine's ``final/`` copy when a revision ran, otherwise
+        the pipeline's own compile. Mirrors ``final_resume``, and exists
+        because ``pdf_path`` alone reads as "the PDF" while meaning the draft.
+        """
+        if self.revision is not None and self.revision.pdf_path is not None:
+            return self.revision.pdf_path
+        return self.pdf_path

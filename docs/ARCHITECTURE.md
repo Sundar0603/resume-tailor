@@ -2,17 +2,54 @@ This document is the authoritative source for all architectural decisions in Res
 
 Resume Tailor CLI v1.0
 
-**Version:** 1.4
+**Version:** 1.6
 
 **Status:** Frozen
 
-**Last Updated:** 2026-08-26
+**Last Updated:** 2026-09-04
 
 ## Amendment Log
 
 This document is Frozen: implementation may not diverge from it, but the
 document itself may be corrected when it is found to describe something the
 project never built. Each entry below records such a correction.
+
+**1.6 — 2026-09-04**
+
+- *The tailoring command is `resume-tailor tailor`, not bare `resume-tailor`* —
+  the CLI section shows `resume-tailor --resume backend` and
+  `resume-tailor --mode aggressive`, a root command carrying the run's options.
+  What shipped is a subcommand, `resume-tailor tailor [--resume PATH]
+  [--jd PATH] [--mode ...]`, beside `doctor`, `analyze` and `plan`. Reason: the
+  root app was already a `typer.Typer` with `no_args_is_help=True` and three
+  registered subcommands by task 011; making the fourth a root command would
+  have meant a different shape for the one command that does the most, and
+  `no_args_is_help` would have had to go. Required by
+  `tasks/019-cli-implementation.md`.
+- *`--resume` takes a path, not a shorthand name* — `--resume backend` implies
+  a name resolved against a known set. Resumes are discovered dynamically from
+  the content directory (`--content-dir`, default `content/`), because the
+  project supports an arbitrary number of them and nothing may hardcode their
+  names. Omitting `--resume` lists what is there and prompts; a single resume is
+  selected without a prompt.
+- *Pasting a job description is not "Later"* — the CLI section defers
+  `pbpaste | resume-tailor` to a later phase. `tailor` reads a pasted job
+  description from stdin to EOF by default, which is the workflow
+  `resume-tailor analyze` has used since task 010; `--jd PATH` is the
+  alternative, matching `plan`.
+- *A run's artifacts live in a timestamped directory* — `output/runs/<stem>_<mode>_<YYYYMMDD-HHMMSS>/`.
+  Reason: runs must not overwrite one another, and a name carrying only resume
+  and mode leaves a crashed run's stale report beside the next run's PDF with
+  no marker (PROJECT_KNOWLEDGE §11).
+- *The pipeline gained a progress callback and a post-revision validation
+  stage* — `ResumePipeline.run` takes an optional `on_stage` callback,
+  announcement-only, so a CLI can report progress across a 60–80 s run without
+  re-implementing the chain. It also re-validates the resume the Revision
+  Engine returns, against the original source, raising
+  `FinalResumeValidationError`. Reason: the Revision Engine deletes content and
+  checks only its own retention floors, never the Validator; the floors sit
+  strictly above the Validator's minimums, so this is a tripwire rather than an
+  expected failure. Required by `tasks/019-cli-implementation.md` §9.
 
 **1.5 — 2026-09-03**
 
@@ -840,14 +877,17 @@ the original) belongs to the Quality Gate and will join its attempt directory
 when that stage is built.
 
 CLI
-resume-tailor
-resume-tailor --resume backend
-resume-tailor --mode aggressive
+
+resume-tailor tailor
+resume-tailor tailor --resume content/backend_resume.md --mode aggressive
+resume-tailor tailor --jd posting.md --mode strict
 resume-tailor doctor
+resume-tailor analyze
+resume-tailor plan
 
-Later
-
-pbpaste | resume-tailor
+Amended in 1.6 — see the Amendment Log. `tailor` reads a pasted job description
+from stdin when `--jd` is not given, so `pbpaste | resume-tailor tailor` works
+today rather than "later".
 Phase 1 (MVP)
 
 This is the version you'll actually use during your job hunt.

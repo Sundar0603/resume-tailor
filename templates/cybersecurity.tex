@@ -92,10 +92,16 @@
 
 %-------------------------
 % Custom commands
-\newcommand{\resumeItem}[1]{
-  \item\small{
-    {#1 \vspace{-1pt}}
-  }
+% Every line end here is commented and there is no space before \vspace.
+% Both matter: any stray space token after #1 is non-discardable, so when a
+% bullet's last line already fills the measure under \raggedright, TeX cannot
+% fit the remainder and emits an extra empty line one \baselineskip tall --
+% a visible gap between bullets, with no Overfull/Underfull warning to catch
+% it. Removing only one of the two sources is not enough; both were measured.
+\newcommand{\resumeItem}[1]{%
+  \item\small{%
+    {#1\vspace{-1pt}}%
+  }%
 }
 
 \newcommand{\classesList}[4]{

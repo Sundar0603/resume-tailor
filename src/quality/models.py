@@ -26,6 +26,7 @@ class QualityIssueCode(str, Enum):
     TEXT_OVERLAP = "TEXT_OVERLAP"
     ORPHAN_WORD = "ORPHAN_WORD"
     RULE_TEXT_COLLISION = "RULE_TEXT_COLLISION"
+    BULLET_SPACING_ANOMALY = "BULLET_SPACING_ANOMALY"
 
 
 class QualitySeverity(str, Enum):
@@ -88,6 +89,15 @@ REVISION_ORDER: Dict[ResumeSection, int] = {
 # wrong call. It is still reported, so the Revision Engine may act on it when it
 # is already rewriting that section for another reason.
 #
+# BULLET_SPACING_ANOMALY is the second WARNING, for a different reason: its
+# cause was a stray space token in \resumeItem that produced a phantom empty
+# line, and that is now fixed in the templates. The check stays as a regression
+# guard. It cannot block yet because the Revision Engine never branches on issue
+# code -- it reads only ``passed`` and ``overflow_line_count`` -- so a blocking
+# finding that shortening cannot fix would make it delete content down to its
+# retention floors and then raise OnePageInfeasibleError citing an overflow of
+# zero. Promote it to ERROR once the fix has soaked and the engine can act on it.
+#
 # Everything else blocks. An overfull hbox puts text in the margin, a missing
 # glyph means content was silently dropped, and overlap or a rule through text
 # is a broken page.
@@ -99,6 +109,7 @@ SEVERITY_BY_CODE: Dict[QualityIssueCode, QualitySeverity] = {
     QualityIssueCode.TEXT_OVERLAP: QualitySeverity.ERROR,
     QualityIssueCode.RULE_TEXT_COLLISION: QualitySeverity.ERROR,
     QualityIssueCode.ORPHAN_WORD: QualitySeverity.WARNING,
+    QualityIssueCode.BULLET_SPACING_ANOMALY: QualitySeverity.WARNING,
 }
 
 
@@ -137,6 +148,7 @@ class QualityMetrics(BaseModel):
     overlap_count: int = Field(ge=0)
     orphan_word_count: int = Field(ge=0)
     rule_collision_count: int = Field(ge=0)
+    bullet_spacing_anomaly_count: int = Field(ge=0)
 
     # Overflow magnitude, for the Revision Engine
     total_text_lines: int = Field(ge=0)

@@ -25,7 +25,13 @@ from typing import Callable, List, Optional
 from src.compiler.exceptions import CompilationFailedError
 from src.compiler.models import CompilationResult
 
-from .checks import find_orphans, find_overlaps, find_rule_collisions, measure_overflow
+from .checks import (
+    find_bullet_spacing_anomalies,
+    find_orphans,
+    find_overlaps,
+    find_rule_collisions,
+    measure_overflow,
+)
 from .exceptions import QualityAnalysisError
 from .geometry import PageGeometry, pdfminer_extractor
 from .log_analysis import analyse_log, read_log
@@ -98,10 +104,11 @@ class QualityGate:
         overlaps = find_overlaps(pages)
         orphans = find_orphans(pages)
         collisions = find_rule_collisions(pages)
+        bullet_gaps = find_bullet_spacing_anomalies(pages)
         overflow_lines, overflow_height, overflowing, per_section = measure_overflow(
             pages
         )
-        issues.extend(self._stage_two(overlaps, orphans, collisions))
+        issues.extend(self._stage_two(overlaps, orphans, collisions, bullet_gaps))
 
         metrics = QualityMetrics(
             page_count=page_count,
@@ -111,6 +118,7 @@ class QualityGate:
             overlap_count=len(overlaps),
             orphan_word_count=len(orphans),
             rule_collision_count=len(collisions),
+            bullet_spacing_anomaly_count=len(bullet_gaps),
             total_text_lines=sum(len(page.lines) for page in pages),
             overflow_line_count=overflow_lines,
             overflow_height_points=overflow_height,
@@ -156,6 +164,7 @@ class QualityGate:
             overlap_count=0,
             orphan_word_count=0,
             rule_collision_count=0,
+            bullet_spacing_anomaly_count=0,
             total_text_lines=0,
             overflow_line_count=0,
             overflow_height_points=0.0,
@@ -232,7 +241,9 @@ class QualityGate:
             for glyph in sorted(glyphs)
         ]
 
-    def _stage_two(self, overlaps, orphans, collisions) -> List[QualityIssue]:
+    def _stage_two(
+        self, overlaps, orphans, collisions, bullet_gaps
+    ) -> List[QualityIssue]:
         """Findings that need rendered geometry."""
         issues: List[QualityIssue] = []
         for upper, lower, ink in overlaps:
@@ -274,6 +285,21 @@ class QualityGate:
                     "{0}.".format(line.page),
                     page=line.page,
                     line_text=line.text.strip()[:60],
+                )
+            )
+        for preceding, following, gap in bullet_gaps:
+            issues.append(
+                QualityIssue(
+                    code=QualityIssueCode.BULLET_SPACING_ANOMALY,
+                    severity=SEVERITY_BY_CODE[QualityIssueCode.BULLET_SPACING_ANOMALY],
+                    stage=QualityStage.STAGE_2,
+                    message="Bullets are {0:.2f}pt apart on page {1}, where "
+                    "their siblings are not.".format(gap, following.page),
+                    page=following.page,
+                    line_text="{0} / {1}".format(
+                        preceding.text.strip()[:60], following.text.strip()[:60]
+                    ),
+                    magnitude=gap,
                 )
             )
         return issues

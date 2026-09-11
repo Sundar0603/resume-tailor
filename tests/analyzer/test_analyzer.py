@@ -11,7 +11,7 @@ Determinism is covered separately in test_determinism.py.
 """
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import pytest
 
@@ -23,6 +23,8 @@ from src.analyzer import (
     InvalidAnalyzerJSON,
     InvalidAnalyzerResponse,
     JobAnalysisValidationError,
+    MissingJobRole,
+    FALLBACK_ROLES,
 )
 
 
@@ -57,6 +59,30 @@ class FailingProvider(LLMProvider):
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
         raise self._exc
+
+
+class ScriptedProvider(LLMProvider):
+    """
+    LLM provider that returns each response in turn.
+
+    The analyzer makes a second call when the job description states no
+    job title, so a fallback test needs the analysis response and the
+    title response to differ. Records every prompt for assertions.
+    """
+
+    def __init__(self, *responses: str) -> None:
+        self._responses = list(responses)
+        self.prompts: List[str] = []
+
+    def generate(
+        self,
+        prompt: str,
+        options: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        self.prompts.append(prompt)
+        if not self._responses:
+            raise AssertionError("provider called more times than scripted")
+        return self._responses.pop(0)
 
 
 def _analyzer(response: str) -> JDAnalyzer:
@@ -215,6 +241,20 @@ class TestInvalidCases:
         with pytest.raises(JobAnalysisValidationError):
             analyzer.analyze("Some JD.")
 
+    def test_unresolvable_role_raises_missing_job_role(self):
+        # No title in the job description and no fallback title fits it
+        # either: the failure must name the missing title, not the schema.
+        payload = _complete_payload()
+        payload["role"] = None
+        provider = ScriptedProvider(_json(payload), '{"role": "Underwater Basket Weaver"}')
+        analyzer = JDAnalyzer(provider=provider)
+        with pytest.raises(MissingJobRole):
+            analyzer.analyze("Job Requirements\n\n3 to 5 years of experience.")
+
+    def test_missing_job_role_is_a_validation_error(self):
+        # Callers catching the general case keep working.
+        assert issubclass(MissingJobRole, JobAnalysisValidationError)
+
     def test_summary_is_rejected_as_an_unknown_field(self):
         # `summary` was removed from JobAnalysis: free-form prose is the
         # least reproducible part of an analysis. A model that still emits
@@ -358,4 +398,120 @@ class TestValidation:
     def test_empty_response_raises_invalid_analyzer_response(self):
         analyzer = _analyzer("")
         with pytest.raises(InvalidAnalyzerResponse):
+            analyzer.analyze("Some JD.")
+
+
+# ---------------------------------------------------------------------------
+# Fallback job title
+# ---------------------------------------------------------------------------
+
+
+class TestRoleFallback:
+    """
+    A job description pasted from a careers page routinely loses its
+    heading, and with it the job title. Rather than fail, the analyzer
+    asks the model to pick a title from a closed list and marks the
+    result as inferred.
+    """
+
+    @staticmethod
+    def _payload_without_role() -> dict:
+        payload = _complete_payload()
+        payload["role"] = None
+        return payload
+
+    def test_null_role_is_resolved_from_the_fallback_list(self):
+        provider = ScriptedProvider(
+            _json(self._payload_without_role()),
+            '{"role": "DevOps Engineer"}',
+        )
+        result = JDAnalyzer(provider=provider).analyze("Job Requirements\n\nHelm, Jenkins, CI/CD.")
+        assert result.role == "DevOps Engineer"
+        assert result.role_inferred is True
+
+    def test_absent_role_key_is_resolved_too(self):
+        payload = _complete_payload()
+        del payload["role"]
+        provider = ScriptedProvider(_json(payload), '{"role": "Software Engineer"}')
+        result = JDAnalyzer(provider=provider).analyze("Some JD.")
+        assert result.role == "Software Engineer"
+        assert result.role_inferred is True
+
+    def test_placeholder_role_is_resolved_rather_than_accepted(self):
+        # min_length=1 accepts "N/A", which would otherwise travel the
+        # whole pipeline as if it were a real job title.
+        for placeholder in ("N/A", "none", "Not specified", "   "):
+            payload = _complete_payload()
+            payload["role"] = placeholder
+            provider = ScriptedProvider(_json(payload), '{"role": "Software Developer"}')
+            result = JDAnalyzer(provider=provider).analyze("Some JD.")
+            assert result.role == "Software Developer"
+            assert result.role_inferred is True
+
+    def test_a_stated_role_is_never_inferred(self):
+        # The fallback must not fire, and must not cost a second call.
+        provider = ScriptedProvider(_json(_complete_payload()))
+        result = JDAnalyzer(provider=provider).analyze("Some JD.")
+        assert result.role == "Senior Software Engineer"
+        assert result.role_inferred is False
+        assert len(provider.prompts) == 1
+
+    def test_model_cannot_claim_its_own_role_provenance(self):
+        # role_inferred is the analyzer's to record. A model that emits it
+        # is overruled either way.
+        payload = _complete_payload()
+        payload["role_inferred"] = True
+        provider = ScriptedProvider(_json(payload))
+        assert JDAnalyzer(provider=provider).analyze("Some JD.").role_inferred is False
+
+    def test_fallback_reply_is_matched_leniently(self):
+        # A model that decorates the title with a seniority it was told to
+        # omit has still chosen a list entry.
+        for reply, expected in (
+            ('{"role": "software engineer"}', "Software Engineer"),
+            ('{"role": "Senior Data Engineer"}', "Data Engineer"),
+            ("Platform Engineer", "Platform Engineer"),
+            ('```json\n{"role": "QA Engineer"}\n```', "QA Engineer"),
+        ):
+            provider = ScriptedProvider(_json(self._payload_without_role()), reply)
+            result = JDAnalyzer(provider=provider).analyze("Some JD.")
+            assert result.role == expected, reply
+            assert result.role_inferred is True
+
+    def test_fallback_prompt_lists_every_allowed_title(self):
+        provider = ScriptedProvider(
+            _json(self._payload_without_role()),
+            '{"role": "Software Engineer"}',
+        )
+        JDAnalyzer(provider=provider).analyze("Some JD.")
+        fallback_prompt = provider.prompts[1]
+        for role in FALLBACK_ROLES:
+            assert role in fallback_prompt
+
+    def test_fallback_is_deterministic(self):
+        def run() -> JobAnalysis:
+            provider = ScriptedProvider(
+                _json(self._payload_without_role()),
+                '{"role": "Security Engineer"}',
+            )
+            return JDAnalyzer(provider=provider).analyze("Some JD.")
+
+        assert run() == run()
+
+    def test_fallback_provider_failure_surfaces_as_missing_role(self):
+        class HalfFailingProvider(LLMProvider):
+            def __init__(self, first: str) -> None:
+                self._first = first
+                self._calls = 0
+
+            def generate(self, prompt, options=None):
+                self._calls += 1
+                if self._calls == 1:
+                    return self._first
+                raise RuntimeError("provider exploded")
+
+        analyzer = JDAnalyzer(
+            provider=HalfFailingProvider(_json(self._payload_without_role()))
+        )
+        with pytest.raises(MissingJobRole):
             analyzer.analyze("Some JD.")

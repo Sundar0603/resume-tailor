@@ -22,3 +22,14 @@ class PipelineStageError(PipelineError):
     Guards against a caller assembling a partial run by hand and getting a
     confusing failure three stages later.
     """
+
+
+class FinalResumeValidationError(PipelineStageError):
+    """
+    The resume the Revision Engine returned failed structural validation.
+
+    A tripwire, not an expected failure. ``src/revision/floors.py`` sits
+    strictly above the Validator's minimums, so a revised resume that breaches
+    the Validator means a floor stopped covering it -- and that is the bug to
+    chase, not this message.
+    """

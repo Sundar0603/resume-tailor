@@ -24,16 +24,18 @@ import json
 from pydantic import ValidationError
 
 from ._json_extract import extract_json_object
-from .canonical import canonicalize
+from .canonical import NULL_EQUIVALENTS, canonicalize
 from .exceptions import (
     AnalyzerError,
     InvalidAnalyzerJSON,
     InvalidAnalyzerResponse,
     JobAnalysisValidationError,
+    MissingJobRole,
 )
 from .models import JobAnalysis
 from .prompts import build_analysis_prompt
 from .provider import LLMProvider
+from .role_fallback import resolve_role
 from .sampling import deterministic_options
 
 
@@ -87,6 +89,9 @@ class JDAnalyzer:
             If the provider returns an empty or unexpected response.
         InvalidAnalyzerJSON
             If the provider response cannot be parsed as valid JSON.
+        MissingJobRole
+            If the job description states no job title and no fallback
+            title fits it either.
         JobAnalysisValidationError
             If the parsed JSON does not conform to the JobAnalysis schema.
         AnalyzerError
@@ -94,8 +99,9 @@ class JDAnalyzer:
         """
         prompt = build_analysis_prompt(job_description)
         raw_response = self._invoke_provider(prompt)
-        data = self._parse_json(raw_response)
-        return self._validate(canonicalize(data))
+        data = canonicalize(self._parse_json(raw_response))
+        self._resolve_role(data, job_description)
+        return self._validate(data)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -141,6 +147,31 @@ class JDAnalyzer:
             raise InvalidAnalyzerJSON(
                 f"LLM response is not valid JSON: {exc}"
             ) from exc
+
+    def _resolve_role(self, data: dict, job_description: str) -> None:
+        """
+        Ensure the payload carries a usable role, inferring one if needed.
+
+        Runs before Pydantic for two reasons. A missing title is an input
+        problem, not a schema problem, and reporting it as ``role`` being
+        the wrong type tells the user nothing they can act on. And a
+        placeholder has to be caught here or not at all: ``min_length=1``
+        happily accepts ``"N/A"``, which would then travel the whole
+        pipeline as if it were a job title.
+
+        Mutates *data* in place. ``role_inferred`` is always set from this
+        side, overwriting anything the model volunteered — provenance is
+        the analyzer's to record, not the model's to claim.
+        """
+        data.pop("role_inferred", None)
+
+        role = data.get("role")
+        if isinstance(role, str) and role.strip().casefold() not in NULL_EQUIVALENTS:
+            data["role_inferred"] = False
+            return
+
+        data["role"] = resolve_role(self._provider, job_description)
+        data["role_inferred"] = True
 
     def _validate(self, data: dict) -> JobAnalysis:
         """Validate the parsed dict against the JobAnalysis schema."""

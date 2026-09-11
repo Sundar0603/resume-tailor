@@ -3,10 +3,12 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 018 (Reporter).
-Baseline: **1398 tests passing, 1 skipped** (1340 after task 017); 83 of those
-need a TeX distribution and skip when none is on PATH. Update this file at the end of each task; do not rewrite
-it.
+Status as of the end of task 019 (CLI orchestration).
+Baseline: **1503 tests passing, 3 skipped** (1398 / 1 after task 018); 83 of
+those need a TeX distribution and skip when none is on PATH. The other two
+skips are revision-dependent and skip when the fixture resume already fits one
+page -- that path is covered offline by `TestTheRevisionBranchIsTaken`.
+Update this file at the end of each task; do not rewrite it.
 
 ---
 
@@ -25,6 +27,7 @@ Markdown Resume
   → Quality Gate         ✅ 016
   → Revision Engine      ✅ 017
   → Reporter             ✅ 018
+  → `tailor` CLI        ✅ 019   (the command that drives all of it)
 ```
 
 **The reference chain.** This is the current, canonical data path — keep it up
@@ -251,6 +254,7 @@ field, so it can be compared for determinism:
 ```python
 company: Optional[str] = None
 role: str = Field(min_length=1)
+role_inferred: bool = False         # analyzer-owned, never read from the model
 seniority: Optional[str] = None
 required_skills: List[str]          # required
 preferred_skills: List[str] = []
@@ -261,6 +265,28 @@ qualifications: List[str] = []
 nice_to_have: List[str] = []
 keywords: List[str]                 # required
 ```
+
+**Fallback job title** — `src/analyzer/role_fallback.py`. A job description
+pasted from a careers page usually loses its heading, so the body states no
+title and the extraction prompt (which forbids inventing one) returns
+`role: null`. Rather than fail, the analyzer makes a *second* deterministic
+call asking the model to pick from the closed `FALLBACK_ROLES` list, and sets
+`role_inferred = True`. A reply that matches nothing on the list raises
+`MissingJobRole`; guessing twice is worse than failing once.
+
+The list is closed on purpose: it bounds the invention, makes the answer
+checkable, and keeps the result reproducible. Matching is lenient in three
+narrowing passes (exact → case-insensitive → containment either way), so
+`"Senior Data Engineer"` resolves to `"Data Engineer"`.
+
+Entries carry **no seniority** — that is its own field, extracted from the
+years-of-experience line that usually survives the copy/paste. Baking it into
+the title yields "Senior Senior Software Engineer" downstream.
+
+`role_inferred` is stripped from the model payload before it is honoured, then
+set from the analyzer side: provenance is not the model's to claim. Only
+presentation reads it (`src/cli/analyze.py`, `src/report/markdown.py`), so an
+inferred title never renders as a quoted one.
 
 ---
 
@@ -405,7 +431,7 @@ PlannerError → InvalidPlannerResponse, InvalidPlannerJSON,
                                       MissingPlanEntry, ImmutableSectionViolation,
                                       PlanningModeViolation
 AnalyzerError → InvalidAnalyzerResponse, InvalidAnalyzerJSON,
-                JobAnalysisValidationError
+                JobAnalysisValidationError → MissingJobRole
 ConfigError   → ConfigNotFoundError, ConfigParseError, ConfigValidationError
 ```
 Outlier: `ParserError` lives in `src/parser/metadata_parser.py:12`, not in a
@@ -2203,6 +2229,241 @@ actually be broken: `test_the_package_makes_no_llm_call` scans every import
 line in `src/report/` for `provider`, `prompts`, `sampling` and `subprocess`.
 Same shape as `tests/revision/test_floors.py`'s "single home" test.
 
+## 10j. CLI orchestration (task 019)
+
+`src/cli/tailor.py` and `src/cli/_common.py`, plus three small adaptations to
+`src/pipeline/`. Registered as `app.command("tailor")(tailor)` beside `doctor`,
+`analyze` and `plan`.
+
+```bash
+resume-tailor tailor [--resume PATH] [--jd PATH] [--mode aggressive|strict]
+                     [--content-dir DIR] [--output DIR]
+```
+
+**This was not an orchestration task, whatever the task doc says.** `ResumePipeline`
+already chained every stage and `Reporter` already consumed its result. What was
+missing was a command. Five things `tasks/019-cli-implementation.md` asks for
+were already true of this repo, and building them would each have been a
+regression — recorded here so the next reader does not re-litigate them:
+
+| task doc | reality |
+|---|---|
+| §5 build a `TailoringRun` context | `PipelineResult` already carries every field listed. A second one is the "alternate representation" §5 itself forbids |
+| §6 validate before rendering | `ResumeGenerator._validate_result` already does, *with the run's mode* |
+| §6's snippet omits `mode` | it defaults to STRICT, where `Experience.role` is immutable — an AGGRESSIVE run that legitimately rewrote a role would fail |
+| §14 pass Reporter eight arguments | `Reporter.build(result: PipelineResult)` takes one. `Mode` is `PlanningMode`, there is no `RevisionTrail` model |
+| §10/§11 retain the gate history | `initial_quality` + `revision.gate_results`, assembled inside the Reporter since task 018 |
+
+### The one validation gap the task doc buried
+
+§9's "every Resume returned by the Revision Engine must pass validation" was the
+only genuinely missing piece, and it was real: the engine checks its own floors
+(`_guard_invariants`) and never the Validator, so nothing re-validated
+`final_resume` after bullets, skills and whole projects were deleted.
+
+`ResumePipeline._validate_revised` now does, raising `FinalResumeValidationError`
+(a `PipelineStageError`). It runs **only when a revision actually ran** — the
+Generator already validated its own output, so an unrevised resume is not
+checked twice.
+
+**It is a tripwire, not an expected failure.** `src/revision/floors.py` sits
+strictly above the Validator's minimums, so it should never fire. If it does, a
+floor stopped covering a Validator rule and *that* is the bug to chase. Same
+spirit as `EffectiveAction.DROPPED_UNPLANNED`.
+
+### Progress: the pipeline announces, the CLI decides what that looks like
+
+A run takes 60–80 s and `run()` was one blocking call with no hook, so a
+per-stage display was not buildable without the CLI re-implementing the chain.
+`run()` now takes `on_stage: Optional[Callable[[str], None]]`, called with a
+`STAGE_*` key **before** each stage.
+
+**Announcement only — never completion.** The pipeline holds no display state
+and prints nothing; `tailor.Progress` closes the previous line with a `✓` when
+the next announcement arrives. That asymmetry is deliberate: a run can end at
+any stage, and a pipeline that promised a completion event would have to decide
+what to emit on the way out of an exception. `Progress.abandon()` closes an open
+line without a tick when a stage raises.
+
+`STAGE_REVISE` fires only when the branch is entered, so a resume that already
+fits never prints a "Revising..." line for work nobody did. Confirmed live in
+both directions (§ below).
+
+### `final_pdf_path`, because `pdf_path` means the draft
+
+`PipelineResult.pdf_path` reads from `compilation`, which is the **pre-revision**
+PDF — the exact footgun this caller would have hit. `final_pdf_path` mirrors
+`final_resume`: the engine's `final/` copy when a revision ran, otherwise the
+pipeline's own compile. Both kept, both documented; `pdf_path` was not changed
+because it pairs correctly with `generated_resume`.
+
+### Run directories are timestamped, and `live_run.py` still is not
+
+`output/runs/<stem>_<mode>_<YYYYMMDD-HHMMSS>/`, overridable with `--output`.
+
+`scripts/live_run.py` keys on `<stem>_<mode>` alone and overwrites, which is the
+trap §11 records: a run that dies early leaves the *previous* run's report
+sitting beside nothing, with no marker that it is stale. A fresh directory per
+run closes it by construction rather than by a stamp file.
+
+Report determinism is unaffected — `RevisionSummary` stores artifact paths
+relative to the run directory (§10i) and no timestamp enters the report.
+
+One directory holds everything, as it already did: `generated.md`,
+`resume.{tex,pdf,log}`, `work/`, `attempt_<n>/`, `final/`,
+`revision_trail.json`, and the Reporter's three files flat beside them. **No
+second output system was invented.**
+
+### `OnePageInfeasibleError` is caught by the CLI, and writes no report
+
+Decided with the user. The error propagates out of the pipeline, so there is no
+`PipelineResult` and `Reporter.build` cannot run — for the one case a reader
+would most want explained. The command prints `spill`, `steps_taken`,
+`pdf_path` and `trail_path`, says plainly that no report was written, and exits
+1. Task 017's contract is untouched.
+
+The alternative — the pipeline catching it and returning a failed result — would
+change task 017's contract and needs a "this run failed" notion in both
+`PipelineResult` and the Reporter. Still open (§11), now as a deliberate choice
+rather than an oversight.
+
+**A failing quality gate is different and does get a report.** `Reporter.build`
+works whenever `quality is not None`, and a failing run is exactly when the
+report is most worth having. The command writes it, lists the blocking findings,
+and still exits 1. It never claims a final resume it does not have.
+
+### `src/cli/_common.py`, and why the ladder is a table
+
+§11 had flagged the extraction as waiting on a third command. `analyze` and
+`plan` each carried the same ~60 lines: config load, provider construction,
+printer helpers, and a ~14-arm error ladder.
+
+**The ladder is now an ordered table walked with `isinstance`, not a chain of
+`except` clauses.** Both commands depended on a hazard that clauses make
+invisible: every subclass must be listed before its base, or a specific failure
+is reported as a generic one. As data, the ordering is testable — and it is
+tested, by walking the table and asserting no arm is a subclass of an earlier
+one. It also lets a caller delegate from a single `except` without losing the
+order, which is what `tailor` does after its own stage arms.
+
+`report_llm_error` returns `False` for anything unrecognised so the caller
+re-raises rather than swallows: a stack trace beats a confident wrong diagnosis.
+
+Two things normalised on the way through: the failure glyph (`analyze` and
+`doctor` wrote `"✗"` escapes, `plan` a literal `✗`) and the JD input, which
+was split — `analyze` read stdin only, `plan` a file only. `read_job_description`
+now does both, file when `--jd` is given and the Ctrl-D paste banner otherwise.
+
+**`doctor.py` was deliberately left alone.** It owns its own `typer.Typer` app
+and a differently shaped `_print_section`, and `tests/cli/test_doctor.py` patches
+`src.cli.doctor.ProviderFactory.create` — 450 lines of passing tests that stay
+valid. `analyze` and `plan` now resolve the factory through `src.cli._common`, so
+**a test for either must patch `src.cli._common.ProviderFactory.create`.**
+
+### The content directory is a CLI default, not a config key
+
+`DEFAULT_CONTENT_DIRECTORY = "content"` in `_common.py`, overridable with
+`--content-dir`. `ResumeTailorConfig` is provider-only, uses `extra="forbid"`,
+and `manager._serialize` is hand-rolled TOML that would silently drop an
+unknown key — two changes to hold a value the command line can default. Mirrors
+`template_directory="templates"`, threaded the same way.
+
+Discovery is `sorted(Path(dir).glob("*.md"))`: no count, no names. None is an
+actionable error, one is selected silently (one resume is not a decision, so it
+is not a question), several are offered as a numbered prompt. `--resume` skips
+discovery, and is checked for existence *before* being announced — otherwise the
+command ticks "Source resume: nope.md" and only then fails, which reads as
+though the load succeeded.
+
+No `--template` flag: `content/backend_resume.md` names `template: backend` in
+its own front matter.
+
+### Confirmed live, 2026-09-04
+
+Real provider (`qwen3.6:latest`), real renderer, compiler, gate, engine and
+reporter. Both branches of the revision decision:
+
+| run | mode | wall | revision | pages | passed |
+|---|---|---|---|---|---|
+| `backend_resume` + backend JD | AGGRESSIVE | 72.0 s | 6 steps, **0 LLM calls** | 1 | ✅ |
+| `fullstack_resume` + fullstack JD | STRICT | 67.3 s | not entered | 1 | ✅ |
+| `cybersecurity_resume` + appdev JD | AGGRESSIVE | 79.7 s | 5 steps, **0 LLM calls** | 1 | ✅ |
+
+Wall clock 67–80 s against the 180 s budget, matching §10h's 62.8–78.5 s. Spill
+progressions:
+
+```text
+backend_aggressive        15 → 13 → 7 → 7 → 7 → 7 → 0
+cybersecurity_aggressive  14 → 12 → 10 → 5 → 5 → 0
+```
+
+Both carry consecutive removals that free nothing, then one that clears the
+page — the `\resumeSubHeadingListStart` blocks moving as a unit, exactly as
+§10f measured and §10h pinned. §10h's "the deterministic path needs no model"
+holds for three more runs: **zero revision LLM calls across all of them.**
+
+The three runs left three separate directories, all intact afterwards, which is
+the artifact-isolation claim checked rather than asserted.
+
+The strict run printed no "Revising..." line and its final PDF is the pipeline's
+own compile rather than `final/resume.pdf`, which is the other half of the
+`final_pdf_path` distinction working.
+
+Failure paths checked live, all exit 1 with no traceback: absent `--resume`,
+empty content directory, unreachable provider host, unknown `--mode`.
+
+Note what the unreachable-host run actually prints: **`✗ Analyzer error: LLM
+provider raised an unexpected error: ...`**, not "Connection failed". A
+transport failure raised *inside* a stage arrives wrapped, because each AI
+package re-raises its own errors untouched and wraps everything else
+(§8). Only a failure raised by `ProviderFactory.create` reaches the provider
+ladder unwrapped. Both are pinned by tests; the wrapped one still carries the
+underlying message, which is what makes it debuggable.
+
+### Testing
+
+`tests/cli/` — 128 tests, up from 37. `conftest.py` supplies `config_file` and
+`content_dir`, so no test reads the developer's real `~/.resume-tailor/config.toml`.
+
+**`analyze` and `plan` now have tests, and they were written because this task
+refactored them.** Both shipped with zero coverage (§11 recorded the duplication
+but not the absence of a net), and moving their bootstrap, job-description input
+and error ladder into `_common.py` is exactly the change that hides a
+regression. `test_analyze.py` and `test_plan.py` cover each command's own
+pretty-printer and assert it is *wired* to the shared ladder; the ladder's arms
+themselves are covered once, in `test_common.py`, rather than three times.
+
+`test_plan.py::PlanFailsProvider` exists for a reason worth keeping: a provider
+that raises on **every** call never reaches the planner, because the analyzer
+runs first and wraps anything foreign as an `AnalyzerError` (§8). Testing the
+planner arms needs a provider that answers the analysis call and fails the
+planning one. The same wrapping is why `tailor`'s live unreachable-host run
+prints `Analyzer error`, not `Connection failed`.
+
+Configuration is real; only the provider is substituted, by
+`tests/pipeline/conftest.py::ScriptedProvider` (cross-package conftest imports
+are established, §10i). `patch` appears only to *inject* at a module boundary —
+`ProviderFactory.create` and `ResumePipeline` — which is the use
+`test_doctor.py` already makes of it. No mock ever supplies behaviour.
+
+**`tests/cli/test_tailor.py::TestTheRealChain` runs the actual pipeline** with
+only the LLM scripted, and needs pdflatex. The stubbed tests prove the command's
+own behaviour; this proves the command is wired to the real thing, which is the
+seam that survives every unit test and then fails once (§9 lesson 6).
+
+`tests/cli/test_common.py` is the regression net `analyze` and `plan` never had
+— they shipped with **zero** tests, so the extraction started from nothing.
+
+`tests/pipeline/test_end_to_end.py::TestTheRevisionBranchIsTaken` exists because
+the backend fixture fits on one page, so every revision-dependent test skips and
+the revise → validate wiring would never actually run. Three stubs force the
+branch offline: a compiler that reports success without an engine, a gate whose
+verdict is always two pages, and an engine that returns a resume. Same lesson as
+§10h's `CountingGate` — **a test that skips on the fixture you have is not
+covering the path.**
+
+---
+
 ## 11. Known open items
 
 - **FIXED: nothing produced a report.** `src/report/` (§10i) now emits
@@ -2212,8 +2473,12 @@ Same shape as `tests/revision/test_floors.py`'s "single home" test.
   `10_run_provenance.md`, holding the wall clock, model name and per-call
   timings that a deterministic report must not carry.
 
-- **NEW (task 018): still no CLI, and now three more artifacts nothing on the
-  command line can produce.** `ResumePipeline` plus `Reporter` is the whole
+- **FIXED (task 019): there is now a CLI.** `resume-tailor tailor` drives the
+  whole chain and writes all three report artifacts (§10j). The note below is
+  what it closed.
+
+- ~~**NEW (task 018): still no CLI, and now three more artifacts nothing on the
+  command line can produce.**~~ `ResumePipeline` plus `Reporter` is the whole
   chain, and the only entry points remain Python and `scripts/live_run.py`.
   This is the same gap §11 has recorded since task 013; the Reporter does not
   widen it, but it does mean the report is only reachable from code. That
@@ -2225,6 +2490,14 @@ Same shape as `tests/revision/test_floors.py`'s "single home" test.
   the planner guarantees total coverage and the generator only grows the resume
   — so it exists as a tripwire. If it ever appears in a real report, a stage is
   dropping entities silently and that is the bug to chase, not the report.
+
+- **STILL OPEN, now by decision (task 019): the report cannot describe a run
+  that never finished.** `resume-tailor tailor` catches
+  `OnePageInfeasibleError` and prints its `spill`, `steps_taken`, `pdf_path`
+  and `trail_path`, saying plainly that no report was written. That is the
+  smallest honest answer; closing it properly still means the pipeline
+  returning a failed result, which is a change to task 017's contract. The
+  original note follows.
 
 - **NEW (task 018): the report describes the run, and cannot describe a run
   that never finished.** `OnePageInfeasibleError` propagates out of the
@@ -2245,7 +2518,9 @@ Same shape as `tests/revision/test_floors.py`'s "single home" test.
   the plan.
 
 - **NEW: a crashed `live_run.py` leaves the previous run's artifacts looking
-  current.** The output directory is keyed on resume stem + mode and is written
+  current. Applies to the script only — the CLI is not affected**, because
+  `resume-tailor tailor` writes into a fresh timestamped directory per run
+  (§10j). `live_run.py` still keys on `<stem>_<mode>` and still overwrites. The output directory is keyed on resume stem + mode and is written
   incrementally, so a run that dies early — a mistyped JD path, a provider
   timeout — leaves the *prior* run's `10_run_summary.md` in place with no marker
   that it is stale. Hit while re-running the cybersecurity pairing, whose JD is
@@ -2305,9 +2580,13 @@ Same shape as `tests/revision/test_floors.py`'s "single home" test.
   says measure every mode a prompt change touches; this adds *and every pairing
   you would generalise over*.
 
-- **`src/cli/_common.py` is not extracted.** `analyze.py` and `plan.py` already
-  duplicate ~60 lines of provider bootstrap + error ladder. A third CLI command
-  should trigger the extraction.
+- **FIXED: `src/cli/_common.py` is extracted.** `tailor` was the third command
+  and triggered it, as predicted. The ~60 duplicated lines are gone and the
+  error ladder is now an ordered table rather than a chain of `except` clauses,
+  so its load-bearing ordering is testable (§10j). **Patch target moved:** a
+  test for `analyze` or `plan` must patch
+  `src.cli._common.ProviderFactory.create`. `doctor` was left untouched and its
+  existing patch target still resolves.
 - **RESOLVED: no bullet-level targeting in the plan, and none is needed.** Plan
   models address whole entities; there is no `highlight_indices: List[int]`.
   §10f argued the Revision Engine mostly would not need it, and §10h confirms
@@ -2408,18 +2687,18 @@ Same shape as `tests/revision/test_floors.py`'s "single home" test.
   Compilation itself turns out to be cheap — **~0.5 s per resume**, so four
   attempts cost about 2 s of that 110 s. The budget pressure is all in the LLM
   calls.
-- **There is now an end-to-end chain, but still no CLI.** `src/pipeline/`
-  connects analyze → plan → generate → serialize → render → compile → judge →
-  revise,
-  and `tests/pipeline/` runs it offline on every change. What is still missing
-  is a *command*: no `resume-tailor` subcommand drives it, so the entry point
-  is `ResumePipeline` in Python or `tests/pipeline/verify_pipeline.py`. That
-  command is what should trigger the `src/cli/_common.py` extraction.
+- **FIXED: the end-to-end chain now has a command.** `resume-tailor tailor`
+  drives `src/pipeline/` plus the Reporter, and it triggered the
+  `src/cli/_common.py` extraction exactly as this note predicted (§10j).
+  `ResumePipeline` in Python and `scripts/live_run.py` remain available for
+  inspecting a hand-off.
 
-- **`resume-tailor generate` does not exist.** The CLI was out of scope for
-  task 012; `tests/generator/verify_generation.py` is the only way to drive the
-  generator live. That command should also trigger the `src/cli/_common.py`
-  extraction. The serializer is what it will write its output with.
+- **`resume-tailor generate` still does not exist, and may not need to.**
+  `tailor` runs the generator as part of the whole chain and writes
+  `generated.md` through the serializer, so the gap this note described is
+  closed in practice; a generate-only command would be a debugging
+  convenience like `analyze` and `plan`, not a missing capability.
+  `tests/generator/verify_generation.py` remains the live driver.
 - **FIXED: nothing wrote `generated.md`.** `ResumePipeline` now does, as a side
   branch. Task 013 built the serializer but no caller. `LatexRenderer.render_to_file` (task 014) and `PDFCompiler.compile`
   (task 015) are the only writers so far, and only the verify scripts call them
