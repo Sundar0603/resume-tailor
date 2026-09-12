@@ -49,7 +49,7 @@ from src.providers.base import (
     RateLimitError,
 )
 
-runner = CliRunner(mix_stderr=False)
+runner = CliRunner()
 
 
 def echoed(exc: Exception) -> str:

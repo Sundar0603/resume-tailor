@@ -135,22 +135,40 @@ own template in its front matter.
 **Pasting a job description.** When `--jd` is omitted the command reads stdin to
 EOF. Paste, then press **Ctrl+D** (Ctrl+Z on Windows). There is no size limit.
 
-**Output.** Each run gets its own directory,
-`output/runs/<resume>_<mode>_<YYYYMMDD-HHMMSS>/`, so runs never overwrite one
-another:
+**Output.** A run that clears the quality gate is delivered outside the
+repository, one directory per company and role — the resume you send at the
+top, everything that produced it one level down:
 
 ```text
-output/runs/backend_aggressive_20260904-173738/
-├── generated.md            the tailored resume as Markdown
-├── resume.tex / .pdf / .log    the first compile, before any shortening
-├── work/                   scratch space for each revision attempt
-├── attempt_<n>/            checkpoints
-├── final/resume.pdf        ← the resume to submit, when revision ran
-├── revision_trail.json     every removal, with the resulting page count
-├── report.md               what changed and why
-├── changes.md              per-entity before/after
-└── report.json             the same, machine-readable
+/Volumes/Personal Protected/Resume Tailor/resumes/Amazon-FullStackDeveloper/
+├── Resume.pdf              ← the resume to submit
+└── artifacts/
+    ├── generated.md            the tailored resume as Markdown
+    ├── resume.tex / .pdf / .log    the first compile, before any shortening
+    ├── work/                   scratch space for each revision attempt
+    ├── attempt_<n>/            checkpoints
+    ├── final/resume.pdf        the compile that was delivered, when revision ran
+    ├── revision_trail.json     every removal, with the resulting page count
+    ├── report.md               what changed and why
+    ├── changes.md              per-entity before/after
+    └── report.json             the same, machine-readable
 ```
+
+The company and role come from the job analysis; a posting that never names an
+employer is filed under the role alone. A second resume for the same company
+and role is suffixed (`Amazon-FullStackDeveloper-2`) rather than overwriting
+the first. Override the root with `--deliver-to <dir>`.
+
+The artifacts are **moved**, not copied: a delivered run exists in exactly one
+place, and `output/runs/` does not accumulate a second copy of every resume you
+have ever sent.
+
+**While it runs.** The chain works in
+`output/runs/<resume>_<mode>_<YYYYMMDD-HHMMSS>/` (override with `--output`) and
+that directory is consumed on delivery. It survives only when there is nothing
+to deliver — a run that failed the quality gate, or a delivery that could not
+be written — which is exactly when its contents are the diagnosis. A resume
+that failed the gate is never filed among the ones that are ready to send.
 
 The command prints the path to the final PDF, so you never have to work out
 whether to open `final/resume.pdf` or `resume.pdf`.

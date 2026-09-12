@@ -15,6 +15,7 @@ dependencies = [
     "openai",
     "anthropic",
     "google-genai",
+    "pyyaml",
     "tomli; python_version < '3.11'",
     # PDF geometry for the Quality Gate. The upper pin is load-bearing:
     # releases from 20251227 declare requires-python >=3.10.

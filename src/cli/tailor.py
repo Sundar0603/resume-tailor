@@ -23,9 +23,11 @@ go, what the user sees while waiting, and what a failure reads like.
 
 from __future__ import annotations
 
+import re
+import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Dict, List, NoReturn, Optional, Tuple
+from typing import Callable, Dict, List, NamedTuple, NoReturn, Optional, Tuple
 
 import typer
 
@@ -41,6 +43,7 @@ from src.cli._common import (
     read_job_description,
     report_llm_error,
 )
+from src.analyzer.models import JobAnalysis
 from src.analyzer.provider import LLMProvider
 from src.compiler.exceptions import CompilerError
 from src.generator.exceptions import GeneratorError
@@ -70,6 +73,22 @@ from src.report.reporter import Reporter
 from src.revision.exceptions import OnePageInfeasibleError, RevisionError
 
 DEFAULT_RUN_ROOT = "output/runs"
+
+#: Where the finished resume is filed, outside the repository. The run
+#: directory is a working record -- every intermediate artifact, named for the
+#: clock -- and nothing there is the thing you attach to an application. This
+#: is: one directory per company and role, one file in it, named for what it
+#: is rather than for how it was made.
+DEFAULT_DELIVERY_ROOT = "/Volumes/Personal Protected/Resume Tailor/resumes"
+
+#: The name the delivered file always takes. It is the name a recruiter sees.
+DELIVERED_FILENAME = "Resume.pdf"
+
+#: Everything else the run produced, one directory down from the resume.
+#: A delivered run is self-contained: the PDF you send and the full record of
+#: how it was built travel together, and ``output/runs`` accumulates only the
+#: runs that failed.
+ARTIFACTS_DIRNAME = "artifacts"
 
 #: Stage keys to the line shown while that stage runs. The pipeline announces
 #: keys and holds no display state, so the wording lives here. Two of these
@@ -209,6 +228,138 @@ def run_directory(resume_path: Path, mode: PlanningMode) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# Delivery
+# ---------------------------------------------------------------------------
+
+
+def _camel(text: str) -> str:
+    """
+    Collapse a free-text name into one path-safe word: ``Full Stack`` -> ``FullStack``.
+
+    The job description supplies these, so they arrive with whatever
+    punctuation, casing and trailing noise a hiring page had in it. A word
+    that already carries a capital is left exactly as written -- the casing
+    in ``iOS`` or ``AWS`` is the word, and a directory name is read by a
+    human.
+    """
+    words = [word for word in re.split(r"[^A-Za-z0-9]+", text) if word]
+    return "".join(word.capitalize() if word.islower() else word for word in words)
+
+
+def delivery_folder_name(analysis: JobAnalysis) -> str:
+    """
+    ``Amazon-FullStackDeveloper`` -- the company and the role, nothing else.
+
+    ``company`` is optional in a ``JobAnalysis`` because plenty of postings
+    never name the employer. The role is not, so the name degrades to the role
+    alone rather than to a placeholder standing where a company should be.
+    """
+    role = _camel(analysis.role) or "Resume"
+    company = _camel(analysis.company or "")
+    return f"{company}-{role}" if company else role
+
+
+def delivery_directory(analysis: JobAnalysis, root: str) -> Path:
+    """
+    A fresh directory per delivered resume, suffixed when the name is taken.
+
+    Two applications to the same company for the same role is a normal thing
+    to do -- a revised resume, a second team -- and the second one must not
+    overwrite the first. The plain name is used while it is free, so the
+    common case reads exactly as specified.
+
+    Any existing directory counts as taken, not just one holding a resume: a
+    delivery that was interrupted leaves a half-filled directory behind, and
+    moving a new run's artifacts into it would interleave two runs.
+    """
+    base = Path(root) / delivery_folder_name(analysis)
+    if not base.exists():
+        return base
+
+    attempt = 2
+    while (base.parent / f"{base.name}-{attempt}").exists():
+        attempt += 1
+    return base.parent / f"{base.name}-{attempt}"
+
+
+class Delivery(NamedTuple):
+    """Where a delivered run ended up. ``pdf`` is ``None`` if none was made."""
+
+    directory: Path
+    artifacts: Path
+    pdf: Optional[Path]
+    reports: Dict[str, str]
+
+
+def _relocate(path: Optional[str], old_root: Path, new_root: Path) -> Optional[str]:
+    """
+    Rewrite a path inside the run directory to where it will be after a move.
+
+    Anything outside the run directory is returned unchanged -- it is not
+    moving, so a rewritten path would point at a file that never arrives.
+    Computed before the move, while both ends still resolve.
+    """
+    if path is None:
+        return None
+    try:
+        inside = Path(path).resolve().relative_to(old_root.resolve())
+    except ValueError:
+        return path
+    return str(new_root / inside)
+
+
+def deliver(
+    result: PipelineResult,
+    run_directory: Path,
+    reports: Dict[str, str],
+    root: str,
+) -> Optional[Delivery]:
+    """
+    Move a finished run to its resting place, returning where things landed.
+
+    The whole run goes: the resume to ``<Company>-<Role>/Resume.pdf`` and
+    everything else to ``<Company>-<Role>/artifacts/``. A move rather than a
+    copy, because two copies of a run is how a workspace fills up with
+    directories nobody can tell apart -- the delivered one is the only one.
+
+    The reports record their paths relative to the run directory, so moving
+    the tree whole leaves them correct; the paths this returns are the same
+    files at their new addresses.
+
+    ``None`` means there was nothing to deliver. That is not an error here:
+    the caller has already decided the run succeeded, so a delivery that
+    cannot happen is reported rather than raised.
+    """
+    if not run_directory.is_dir():
+        return None
+
+    directory = delivery_directory(result.job_analysis, root)
+    artifacts = directory / ARTIFACTS_DIRNAME
+
+    # Worked out first: after the move the old paths no longer resolve.
+    moved_pdf = _relocate(result.final_pdf_path, run_directory, artifacts)
+    moved_reports = {
+        name: _relocate(path, run_directory, artifacts) or path
+        for name, path in reports.items()
+    }
+
+    directory.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(run_directory), str(artifacts))
+
+    delivered = None  # type: Optional[Path]
+    if moved_pdf is not None and Path(moved_pdf).is_file():
+        delivered = directory / DELIVERED_FILENAME
+        shutil.copy2(moved_pdf, delivered)
+
+    return Delivery(
+        directory=directory,
+        artifacts=artifacts,
+        pdf=delivered,
+        reports=moved_reports,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Result reporting
 # ---------------------------------------------------------------------------
 
@@ -326,6 +477,11 @@ def tailor(
         "--output",
         help="Override the run's artifact directory.",
     ),
+    deliver_to: Optional[str] = typer.Option(
+        None,
+        "--deliver-to",
+        help=f"Directory the finished resume is filed under. Default: {DEFAULT_DELIVERY_ROOT}",
+    ),
     config_path: Optional[str] = typer.Option(
         None,
         "--config",
@@ -362,7 +518,12 @@ def tailor(
         destination=destination,
         provider=provider,
     )
-    _print_outcome(result, reports)
+    _print_outcome(
+        result,
+        reports,
+        run_directory=destination,
+        delivery_root=deliver_to or DEFAULT_DELIVERY_ROOT,
+    )
 
 
 def _execute(
@@ -406,12 +567,21 @@ def _execute(
     return result, reports
 
 
-def _print_outcome(result: PipelineResult, reports: Dict[str, str]) -> None:
+def _print_outcome(
+    result: PipelineResult,
+    reports: Dict[str, str],
+    *,
+    run_directory: Path,
+    delivery_root: str,
+) -> None:
     """
     Say what happened and where the deliverables are.
 
     A run that did not clear the gate still gets its report -- that is when it
     is most worth having -- but never the word "Done." and never a zero exit.
+    It is also never delivered, and so keeps its working directory: the
+    delivery directory holds resumes that are ready to send, and one that
+    failed the gate is not.
     """
     typer.echo("")
 
@@ -422,9 +592,46 @@ def _print_outcome(result: PipelineResult, reports: Dict[str, str]) -> None:
 
     pages = result.quality.metrics.page_count if result.quality else "?"
     typer.echo(f"{SUCCESS_GLYPH} Quality gate passed — {pages} page(s).")
-    _print_artifacts(result.final_pdf_path, reports)
+
+    delivery = _deliver_or_warn(result, run_directory, reports, delivery_root)
+
+    if delivery is None:
+        _print_artifacts(result.final_pdf_path, reports)
+    else:
+        _print_artifacts(
+            str(delivery.pdf) if delivery.pdf else None, delivery.reports
+        )
+        typer.echo("")
+        typer.echo("Artifacts:")
+        typer.echo(f"  {delivery.artifacts}")
+
     typer.echo("")
     typer.echo("Done.")
+
+
+def _deliver_or_warn(
+    result: PipelineResult,
+    run_directory: Path,
+    reports: Dict[str, str],
+    delivery_root: str,
+) -> Optional[Delivery]:
+    """
+    File the finished run, and say so plainly when that could not be done.
+
+    The resume exists either way by this point, so a delivery that fails --
+    an unmounted volume, a directory that cannot be written -- must not turn
+    a successful run into a failed one. It downgrades to a warning, and the
+    run keeps the working directory whose paths the caller then prints.
+    """
+    try:
+        return deliver(result, run_directory, reports, delivery_root)
+    except OSError as exc:
+        typer.echo("")
+        typer.echo(
+            f"{FAILURE_GLYPH} Could not file the run under {delivery_root}: {exc}"
+        )
+        typer.echo(f"  Artifacts are still in {run_directory}")
+        return None
 
 
 def _parse_resume(resume_path: Path, progress: Progress) -> Resume:

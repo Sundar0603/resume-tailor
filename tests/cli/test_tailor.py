@@ -21,17 +21,24 @@ import typer
 from typer.testing import CliRunner
 
 from src.analyzer.provider import LLMProvider
-from src.cli.tailor import discover_resumes, run_directory, tailor
+from src.cli.tailor import (
+    delivery_folder_name,
+    discover_resumes,
+    run_directory,
+    tailor,
+)
+from src.compiler.models import CompilationResult
 from src.parser import ResumeParser
 from src.planner.models import PlanningMode
 from src.providers.base import ConnectionError
 from src.revision.exceptions import OnePageInfeasibleError
 
 from tests.pipeline.conftest import ScriptedProvider
+from tests.planner.conftest import make_job_analysis
 from tests.report.conftest import make_pipeline_result
 from tests.revision.conftest import failing_result
 
-runner = CliRunner(mix_stderr=False)
+runner = CliRunner()
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 app.command()(tailor)
@@ -118,6 +125,23 @@ class StubPipeline:
 
 def stub_pipeline(result=None, error=None):
     return type("_Stub", (StubPipeline,), {"result": result, "error": error})
+
+
+def compiled_result(pdf: Path, **overrides):
+    """A passing run whose final PDF is a file that actually exists."""
+    pdf.parent.mkdir(parents=True, exist_ok=True)
+    pdf.write_bytes(b"%PDF-1.4\n")
+    return make_pipeline_result(
+        compilation=CompilationResult(
+            pdf_path=str(pdf),
+            log_path=str(pdf.with_suffix(".log")),
+            tex_path=str(pdf.with_suffix(".tex")),
+            engine="pdflatex",
+            exit_code=0,
+            duration_seconds=0.1,
+        ),
+        **overrides,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -340,9 +364,14 @@ class TestRunDirectories:
         first = run_directory(Path("x_resume.md"), PlanningMode.AGGRESSIVE)
         assert "aggressive" in first.name
 
-    def test_a_second_run_leaves_the_first_intact(self, config_file, tmp_path):
-        stub = stub_pipeline(result=make_pipeline_result())
+    def test_a_second_run_leaves_the_first_intact(
+        self, config_file, tmp_path, delivery_root
+    ):
+        # Both runs are delivered, and the second must not land on the first.
         for name in ("run_one", "run_two"):
+            stub = stub_pipeline(
+                result=compiled_result(tmp_path / name / "resume.pdf")
+            )
             with patch("src.cli.tailor.ResumePipeline", stub):
                 outcome = invoke(
                     config_file,
@@ -355,9 +384,10 @@ class TestRunDirectories:
                 )
             assert outcome.exit_code == 0
 
-        for name in ("run_one", "run_two"):
-            assert (tmp_path / name / "report.md").is_file()
-            assert (tmp_path / name / "report.json").is_file()
+        for folder in ("Globex-BackendEngineer", "Globex-BackendEngineer-2"):
+            artifacts = delivery_root / folder / "artifacts"
+            assert (artifacts / "report.md").is_file()
+            assert (artifacts / "report.json").is_file()
 
 
 # ---------------------------------------------------------------------------
@@ -366,8 +396,10 @@ class TestRunDirectories:
 
 
 class TestSuccess:
-    def test_the_three_reports_are_written(self, config_file, tmp_path):
-        stub = stub_pipeline(result=make_pipeline_result())
+    def test_the_three_reports_are_written(
+        self, config_file, tmp_path, delivery_root
+    ):
+        stub = stub_pipeline(result=compiled_result(tmp_path / "run" / "resume.pdf"))
         with patch("src.cli.tailor.ResumePipeline", stub):
             result = invoke(
                 config_file,
@@ -380,8 +412,9 @@ class TestSuccess:
             )
         assert result.exit_code == 0
         assert "Done." in result.stdout
+        artifacts = delivery_root / "Globex-BackendEngineer" / "artifacts"
         for name in ("report.md", "changes.md", "report.json"):
-            assert (tmp_path / "run" / name).is_file()
+            assert (artifacts / name).is_file()
             assert name in result.stdout
 
     def test_every_stage_is_ticked(self, config_file, tmp_path):
@@ -590,6 +623,13 @@ class TestFailure:
 # ---------------------------------------------------------------------------
 
 
+def _only_delivery(root: Path) -> Path:
+    """The single directory a run was delivered into."""
+    delivered = sorted(path for path in root.iterdir() if path.is_dir())
+    assert len(delivered) == 1, f"expected one delivery, found {delivered}"
+    return delivered[0]
+
+
 class TestTheRealChain:
     """
     One run through the actual pipeline, with only the LLM scripted.
@@ -600,7 +640,9 @@ class TestTheRealChain:
     """
 
     @needs_tex
-    def test_a_real_run_produces_a_pdf_and_three_reports(self, config_file, tmp_path):
+    def test_a_real_run_produces_a_pdf_and_three_reports(
+        self, config_file, tmp_path, delivery_root
+    ):
         destination = tmp_path / "run"
         result = invoke(
             config_file,
@@ -616,20 +658,25 @@ class TestTheRealChain:
         assert result.exit_code == 0, result.stdout
         assert "Quality gate passed" in result.stdout
 
-        pdfs = list(destination.glob("**/*.pdf"))
-        assert pdfs, "no PDF was produced"
+        # A passing run is delivered, so the working directory is consumed
+        # and the artifacts are found under the company and role.
+        assert not destination.exists()
+        delivered = _only_delivery(delivery_root)
+        assert (delivered / "Resume.pdf").is_file()
+
+        artifacts = delivered / "artifacts"
+        assert list(artifacts.glob("**/*.pdf")), "no PDF was produced"
 
         for name in ("report.md", "changes.md", "report.json"):
-            assert (destination / name).is_file()
+            assert (artifacts / name).is_file()
 
-        payload = json.loads((destination / "report.json").read_text(encoding="utf-8"))
+        payload = json.loads((artifacts / "report.json").read_text(encoding="utf-8"))
         assert payload["final_verdict"]["passed"] is True
 
     @needs_tex
     def test_the_generated_markdown_lands_beside_the_reports(
-        self, config_file, tmp_path
+        self, config_file, tmp_path, delivery_root
     ):
-        destination = tmp_path / "run"
         invoke(
             config_file,
             "--resume",
@@ -637,6 +684,228 @@ class TestTheRealChain:
             "--jd",
             str(jd_file(tmp_path)),
             "--output",
-            str(destination),
+            str(tmp_path / "run"),
         )
-        assert (destination / "generated.md").is_file()
+        artifacts = _only_delivery(delivery_root) / "artifacts"
+        assert (artifacts / "generated.md").is_file()
+
+
+# ---------------------------------------------------------------------------
+# Delivery
+# ---------------------------------------------------------------------------
+
+
+class TestDeliveryNames:
+    """
+    The directory name is read by a human looking for the resume they sent,
+    so it carries the company and the role and nothing about the machinery.
+    """
+
+    def test_the_company_and_the_role_are_joined(self):
+        analysis = make_job_analysis().model_copy(
+            update={"company": "Amazon", "role": "Full Stack Developer"}
+        )
+        assert delivery_folder_name(analysis) == "Amazon-FullStackDeveloper"
+
+    def test_punctuation_and_spacing_do_not_reach_the_path(self):
+        analysis = make_job_analysis().model_copy(
+            update={"company": "Acme, Inc.", "role": "Sr. Engineer (Backend)"}
+        )
+        assert delivery_folder_name(analysis) == "AcmeInc-SrEngineerBackend"
+
+    def test_casing_inside_a_word_survives(self):
+        # Upper-casing the whole word would file iOS work under "IOS".
+        analysis = make_job_analysis().model_copy(
+            update={"company": "Apple", "role": "iOS Developer"}
+        )
+        assert delivery_folder_name(analysis) == "Apple-iOSDeveloper"
+
+    def test_an_unnamed_company_leaves_the_role_alone(self):
+        # Plenty of postings never name the employer, and a placeholder
+        # standing where a company should be is worse than no company.
+        analysis = make_job_analysis().model_copy(
+            update={"company": None, "role": "Backend Engineer"}
+        )
+        assert delivery_folder_name(analysis) == "BackendEngineer"
+
+
+class TestDelivery:
+    def test_the_resume_is_filed_under_company_and_role(self, config_file, tmp_path):
+        stub = stub_pipeline(result=compiled_result(tmp_path / "run" / "resume.pdf"))
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            result = invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+                "--deliver-to",
+                str(tmp_path / "resumes"),
+            )
+
+        delivered = tmp_path / "resumes" / "Globex-BackendEngineer" / "Resume.pdf"
+        assert result.exit_code == 0
+        assert delivered.is_file()
+        assert str(delivered) in result.stdout
+
+    def test_the_artifacts_travel_with_the_resume(self, config_file, tmp_path):
+        # Everything the run produced lands one directory below the resume.
+        pdf = tmp_path / "run" / "resume.pdf"
+        stub = stub_pipeline(result=compiled_result(pdf))
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            result = invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+                "--deliver-to",
+                str(tmp_path / "resumes"),
+            )
+
+        artifacts = tmp_path / "resumes" / "Globex-BackendEngineer" / "artifacts"
+        assert result.exit_code == 0
+        assert (artifacts / "resume.pdf").is_file()
+        for name in ("report.md", "changes.md", "report.json"):
+            assert (artifacts / name).is_file()
+            assert str(artifacts / name) in result.stdout
+        assert str(artifacts) in result.stdout
+
+    def test_the_working_directory_does_not_survive_a_delivery(
+        self, config_file, tmp_path
+    ):
+        # A move, not a copy: two copies of a run is how a workspace fills up
+        # with directories nobody can tell apart.
+        stub = stub_pipeline(result=compiled_result(tmp_path / "run" / "resume.pdf"))
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+                "--deliver-to",
+                str(tmp_path / "resumes"),
+            )
+        assert not (tmp_path / "run").exists()
+
+    def test_a_failed_run_keeps_its_working_directory(self, config_file, tmp_path):
+        # The artifacts are the diagnosis, and the failure message points at
+        # them. Nothing is delivered, so nothing may be moved either.
+        stub = stub_pipeline(
+            result=compiled_result(
+                tmp_path / "run" / "resume.pdf", quality=failing_result()
+            )
+        )
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            result = invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+                "--deliver-to",
+                str(tmp_path / "resumes"),
+            )
+        assert result.exit_code == 1
+        assert (tmp_path / "run" / "report.md").is_file()
+
+    def test_a_second_resume_for_the_same_role_does_not_overwrite_the_first(
+        self, config_file, tmp_path
+    ):
+        for index in ("one", "two"):
+            stub = stub_pipeline(result=compiled_result(tmp_path / index / "resume.pdf"))
+            with patch("src.cli.tailor.ResumePipeline", stub):
+                outcome = invoke(
+                    config_file,
+                    "--resume",
+                    str(CANONICAL),
+                    "--jd",
+                    str(jd_file(tmp_path)),
+                    "--output",
+                    str(tmp_path / index),
+                    "--deliver-to",
+                    str(tmp_path / "resumes"),
+                )
+            assert outcome.exit_code == 0
+
+        root = tmp_path / "resumes"
+        assert (root / "Globex-BackendEngineer" / "Resume.pdf").is_file()
+        assert (root / "Globex-BackendEngineer-2" / "Resume.pdf").is_file()
+
+    def test_a_failed_run_is_not_delivered(self, config_file, tmp_path):
+        # The delivery directory holds resumes that are ready to send.
+        stub = stub_pipeline(
+            result=compiled_result(
+                tmp_path / "run" / "resume.pdf", quality=failing_result()
+            )
+        )
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            result = invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+                "--deliver-to",
+                str(tmp_path / "resumes"),
+            )
+        assert result.exit_code == 1
+        assert not (tmp_path / "resumes").exists()
+
+    def test_the_default_root_is_read_at_call_time_not_at_import(
+        self, config_file, tmp_path, delivery_root
+    ):
+        # A run without --deliver-to must land under the resolved default.
+        # Freezing that default into the Typer signature at import time put
+        # eight directories of scripted test output into the real resumes
+        # folder, and made the mistake impossible to fence off in a fixture.
+        stub = stub_pipeline(result=compiled_result(tmp_path / "run" / "resume.pdf"))
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            result = invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+            )
+        assert result.exit_code == 0
+        assert (delivery_root / "Globex-BackendEngineer" / "Resume.pdf").is_file()
+
+    def test_an_unwritable_destination_does_not_fail_the_run(
+        self, config_file, tmp_path
+    ):
+        # The resume exists by this point; a filing problem is a warning.
+        blocked = tmp_path / "blocked"
+        blocked.write_text("not a directory", encoding="utf-8")
+        stub = stub_pipeline(result=compiled_result(tmp_path / "run" / "resume.pdf"))
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            result = invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+                "--deliver-to",
+                str(blocked),
+            )
+        assert result.exit_code == 0
+        assert "Could not file the run" in result.stdout
+        # The artifacts are still somewhere, and the message says where.
+        assert str(tmp_path / "run") in result.stdout
+        assert (tmp_path / "run" / "report.md").is_file()
+        assert "Done." in result.stdout

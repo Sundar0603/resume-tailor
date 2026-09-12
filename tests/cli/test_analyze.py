@@ -23,7 +23,7 @@ from src.parser import ResumeParser
 
 from tests.pipeline.conftest import ScriptedProvider
 
-runner = CliRunner(mix_stderr=False)
+runner = CliRunner()
 
 app = typer.Typer(add_completion=False, pretty_exceptions_enable=False)
 app.command()(analyze)

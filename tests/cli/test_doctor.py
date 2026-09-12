@@ -36,7 +36,7 @@ from src.providers.base import (
 )
 from src.providers.factory import ProviderFactory
 
-runner = CliRunner(mix_stderr=False)
+runner = CliRunner()
 
 
 # ---------------------------------------------------------------------------

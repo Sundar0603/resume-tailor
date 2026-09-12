@@ -41,6 +41,19 @@ project never built. Each entry below records such a correction.
   Reason: runs must not overwrite one another, and a name carrying only resume
   and mode leaves a crashed run's stale report beside the next run's PDF with
   no marker (PROJECT_KNOWLEDGE §11).
+- *A passing run is delivered outside the repository* — the whole run is
+  **moved** to `<deliver-to>/<Company>-<Role>/`, defaulting to
+  `/Volumes/Personal Protected/Resume Tailor/resumes`: the PDF as
+  `Resume.pdf`, everything else under `artifacts/`. Reason: the run directory
+  is a working record named for the clock, and nothing in it is the file you
+  attach to an application; keeping a second copy in `output/runs` makes the
+  workspace grow by a full run per application, with two directories nobody
+  can tell apart. A move is safe because the reports record paths relative to
+  the run directory (`src/report/reporter.py:_relative`), so relocating the
+  tree whole leaves them correct. A repeat of the same company and role is
+  suffixed rather than overwritten. A run that fails the gate, or whose
+  delivery cannot be written, keeps its working directory — that is when its
+  contents are the diagnosis.
 - *The pipeline gained a progress callback and a post-revision validation
   stage* — `ResumePipeline.run` takes an optional `on_stage` callback,
   announcement-only, so a CLI can report progress across a 60–80 s run without

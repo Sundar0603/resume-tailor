@@ -39,3 +39,20 @@ def content_dir(tmp_path) -> Path:
     directory = tmp_path / "content"
     directory.mkdir()
     return directory
+
+
+@pytest.fixture(autouse=True)
+def delivery_root(tmp_path, monkeypatch) -> Path:
+    """
+    Point the delivery directory at ``tmp_path`` for every CLI test.
+
+    ``tailor`` files a passing resume outside the repository, under a real
+    path on the developer's disk. A test that invokes the command without
+    ``--deliver-to`` would otherwise write there -- which is exactly what
+    happened, and left eight directories of scripted-provider output sitting
+    among real resumes. Autouse because the rule is "no test writes there",
+    and a rule that each test has to remember is not that rule.
+    """
+    root = tmp_path / "delivered"
+    monkeypatch.setattr("src.cli.tailor.DEFAULT_DELIVERY_ROOT", str(root))
+    return root
