@@ -298,6 +298,23 @@ def decapitalise_mid_sentence(text: str, protected: Optional[Set[str]] = None) -
     return _CAPITALISED_RUN.sub(replace, text)
 
 
+def contains_term(haystack: str, term: str) -> bool:
+    """
+    Return whether ``term`` appears in ``haystack``, case-insensitively.
+
+    Boundaries are "not a letter or digit" rather than ``\\b``, so terms
+    carrying punctuation (``C++``, ``.NET``, ``Node.js``) match correctly, and
+    ``Java`` is not satisfied by ``JavaScript``.
+
+    Lives here rather than in ``src/revision/facts.py``, where it was written,
+    because Knowledge Base retrieval needs the same matcher and depending on
+    the Revision Engine from a stage that runs before planning would invert the
+    pipeline's direction. ``facts`` re-exports it, so its callers are unchanged.
+    """
+    pattern = r"(?<![0-9A-Za-z]){0}(?![0-9A-Za-z])".format(re.escape(term.strip()))
+    return re.search(pattern, haystack, re.IGNORECASE) is not None
+
+
 def is_weak_term(term: str) -> bool:
     """
     Return True when a term is not worth putting on a resume.

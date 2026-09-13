@@ -18,6 +18,8 @@ from src.compiler.models import CompilationResult
 from src.parser.models import Resume
 from src.planner.models import PlanningMode, ResumePlan
 from src.quality.models import QualityGateResult
+from src.knowledge.models import KnowledgeBase
+from src.retrieval.models import KnowledgeBaseRetrieval
 from src.revision.models import RevisionResult
 from src.validation.models import ValidationIssue
 
@@ -32,6 +34,23 @@ class PipelineResult(BaseModel):
     """
 
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    knowledge_base: Optional[KnowledgeBase] = None
+    """
+    The canonical source of truth this run drew on, when it used one.
+
+    ``None`` for a run started from a single role-specific resume. Carried so a
+    report can say what the run *could* have used, not only what it did — the
+    question "the Knowledge Base holds an AI project, did this run see it?" is
+    unanswerable without it.
+    """
+
+    retrieval: Optional[KnowledgeBaseRetrieval] = None
+    """
+    What retrieval selected and what it passed over, with scores.
+
+    ``None`` for a single-resume run, where nothing was selected.
+    """
 
     mode: PlanningMode
     source_resume: Resume

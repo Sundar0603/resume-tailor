@@ -2,17 +2,72 @@ This document is the authoritative source for all architectural decisions in Res
 
 Resume Tailor CLI v1.0
 
-**Version:** 1.6
+**Version:** 1.7
 
 **Status:** Frozen
 
-**Last Updated:** 2026-09-04
+**Last Updated:** 2026-09-12
 
 ## Amendment Log
 
 This document is Frozen: implementation may not diverge from it, but the
 document itself may be corrected when it is found to describe something the
 project never built. Each entry below records such a correction.
+
+**1.7 — 2026-09-12**
+
+- *The four role-specific resumes are no longer the source of truth* — a
+  **Knowledge Base** (`knowledge/knowledge_base.md`) now holds every canonical
+  career fact, and each run assembles the subset a job calls for. Reason: the
+  four resumes are mutually incomplete by design, so a fact's availability
+  depended on which file it happened to land in. Measured on the real content:
+  the MCP/agentic-security work and the Resume Tailor project exist only in
+  `cybersecurity_ai_resume.md`, and no Full Stack + AI run could reach either.
+  Required by `tasks/020-knowledge-base.md`. The four resumes remain on disk,
+  untouched, as curated views.
+- *A retrieval stage sits between the Analyzer and the Planner* —
+  `src/retrieval/`, announced as `STAGE_RETRIEVE`. It scores every Knowledge
+  Base entity against `JobAnalysis` and selects the relevant ones. **It makes
+  no LLM call**: scoring is deterministic weighted term overlap with an alias
+  map (`src/retrieval/aliases.py`). Reason: a run already spends 67–80 s of a
+  180 s budget on five model calls, and the Analyzer and Planner are
+  deterministic by decision; a sixth call would cost budget and reproducibility
+  for a job a weight table does better.
+- *Retrieval emits a `Resume`, so no downstream stage changed* — the Planner,
+  Generator, Validator, Renderer, Compiler, Quality Gate, Revision Engine and
+  Reporter all still consume the same types. `ResumeValidator.validate(
+  source_resume=...)` keeps its exact meaning: the source is still a resume of
+  purely canonical entities, assembled for this job rather than read off a file
+  somebody picked. No validation rule was relaxed.
+- *Strict mode is measured against the whole Knowledge Base* —
+  `ResumeGenerator.generate` takes `canonical_universe`, and `enforce_strict`
+  takes an optional `universe`. Reason: the source resume is only the slice
+  retrieval selected, and judging invention against it would call a fact from
+  an unselected canonical project a fabrication. Required by §18. This is a
+  correction, not a loosening — every term in the universe is human-verified.
+- *One template for every run* — `templates/default.tex`. Reason: verified that
+  `backend.tex`, `fullstack.tex` and `cybersecurity.tex` are byte-identical
+  apart from a static CERTIFICATIONS block the renderer never touches, so
+  per-role templates distinguished nothing. `default.tex` is a copy of
+  `backend.tex`, keeping that block so the certification is not silently
+  dropped from every resume. The three originals stay for the reference views.
+  Decided with the user.
+- *The `tailor` command reads the Knowledge Base by default and `--content-dir`
+  is gone* — `--kb` defaults to `knowledge/knowledge_base.md`; `--resume PATH`
+  is an opt-in escape hatch that tailors from one role-specific resume, and
+  accepts a directory to get the old discovery prompt. Reason: §21 requires
+  that the user not be asked which projects or experiences to use, and a
+  `--content-dir` flag that no longer influences a default run is worse than no
+  flag. `run_directory` now takes a source name rather than a resume path.
+- *`PipelineResult` and `Report` carry retrieval* — `knowledge_base`,
+  `retrieval` and `Report.retrieval` are additive and `None` on a
+  single-resume run. Reason: §24 asks a report to distinguish canonical from
+  generated data, and the genuinely new thing a report can now say is what the
+  Knowledge Base held and the resume did not use.
+- *`contains_term` moved from `src/revision/facts.py` to `src/vocabulary.py`* —
+  retrieval needs the same boundary-aware matcher, and importing the Revision
+  Engine from a stage that runs before planning would invert the pipeline's
+  direction. `facts` imports it; no caller changed.
 
 **1.6 — 2026-09-04**
 

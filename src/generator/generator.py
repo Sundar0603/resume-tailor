@@ -73,7 +73,11 @@ from .prompts import (
     build_projects_prompt,
     build_summary_prompt,
 )
-from .sampling import GENERATOR_TEMPERATURE, generator_options
+from .sampling import (
+    GENERATOR_MAX_ATTEMPTS,
+    GENERATOR_TEMPERATURE,
+    generator_options,
+)
 
 #: The validator requires at least this many projects to survive.
 MIN_PROJECT_COUNT = 2
@@ -113,6 +117,7 @@ class ResumeGenerator:
         resume_plan: ResumePlan,
         mode: Optional[PlanningMode] = None,
         temperature: float = GENERATOR_TEMPERATURE,
+        canonical_universe: Optional[Resume] = None,
     ) -> Resume:
         """
         Generate a tailored resume.
@@ -132,6 +137,16 @@ class ResumeGenerator:
             same contract.
         temperature:
             Sampling temperature for the prose calls.
+        canonical_universe:
+            Every canonical fact available, when that is wider than
+            ``source_resume``. Defaults to ``source_resume``, so a caller that
+            omits it behaves exactly as before.
+
+            Since task 020 the pipeline passes the whole Knowledge Base. The
+            source resume is only the slice retrieval selected for this job,
+            and a fact in an unselected canonical project is still a fact the
+            candidate can defend in an interview. Judging strict mode against
+            the narrower slice would call that invention (§18).
 
         Returns
         -------
@@ -161,7 +176,10 @@ class ResumeGenerator:
         # Aggressive additionally allows anything the job asked for — but only
         # that. A term in neither the resume nor the job is invention, not
         # tailoring, and "Jest" reached a generated resume that way.
-        vocabulary = source_vocabulary(source_resume)
+        universe = (
+            canonical_universe if canonical_universe is not None else source_resume
+        )
+        vocabulary = source_vocabulary(universe)
         if resolved == PlanningMode.AGGRESSIVE:
             vocabulary = vocabulary | job_vocabulary(job_analysis)
 
@@ -229,7 +247,7 @@ class ResumeGenerator:
         )
 
         if resolved != PlanningMode.AGGRESSIVE:
-            enforce_strict(source_resume, generated)
+            enforce_strict(source_resume, generated, universe)
 
         self._validate_result(source_resume, generated, resolved)
         return generated
@@ -787,11 +805,39 @@ class ResumeGenerator:
     # ------------------------------------------------------------------
 
     def _call(self, prompt: str, temperature: float) -> Dict[str, Any]:
-        """Invoke the provider and return the parsed JSON object."""
+        """
+        Invoke the provider and return the parsed JSON object.
+
+        A section is asked for up to :data:`GENERATOR_MAX_ATTEMPTS` times.
+        Local models answer with prose, a half-finished object or nothing at
+        all often enough that a single malformed reply used to end a run that
+        had already spent minutes on analysis, planning and the sections
+        before it — and the next attempt usually parses. Only the model's
+        *output* is retried: a transport failure means the provider is not
+        answering, and asking it again is no more likely to work.
+
+        Each retry re-rolls the seed. The shared one is fixed, so repeating
+        the call unchanged would reproduce the unparseable reply verbatim.
+        """
+        last: Optional[GeneratorError] = None
+        for attempt in range(GENERATOR_MAX_ATTEMPTS):
+            response = self._invoke(prompt, temperature, attempt)
+            try:
+                return self._parse_call(response)
+            except (InvalidGeneratorJSON, InvalidGeneratorResponse) as exc:
+                last = exc
+
+        assert last is not None  # GENERATOR_MAX_ATTEMPTS is never zero.
+        raise last
+
+    def _invoke(self, prompt: str, temperature: float, attempt: int) -> str:
+        """Send one prompt to the provider and return the raw reply."""
+        options = generator_options(temperature)
+        if attempt:
+            options["seed"] = int(options["seed"]) + attempt
+
         try:
-            response = self._provider.generate(
-                prompt, options=generator_options(temperature)
-            )
+            return self._provider.generate(prompt, options=options)
         except GeneratorError:
             raise
         except Exception as exc:
@@ -799,6 +845,8 @@ class ResumeGenerator:
                 f"LLM provider raised an unexpected error: {exc}"
             ) from exc
 
+    def _parse_call(self, response: Optional[str]) -> Dict[str, Any]:
+        """Parse one raw reply, or raise the reason it could not be used."""
         if not response or not response.strip():
             raise InvalidGeneratorResponse(
                 "LLM provider returned an empty response."
@@ -808,7 +856,8 @@ class ResumeGenerator:
             parsed = json.loads(extract_json_object(response.strip()))
         except json.JSONDecodeError as exc:
             raise InvalidGeneratorJSON(
-                f"LLM response is not valid JSON: {exc}"
+                f"LLM response is not valid JSON: {exc} "
+                f"(response began: {_preview(response)})"
             ) from exc
 
         if not isinstance(parsed, dict):
@@ -873,6 +922,21 @@ class ResumeGenerator:
 # ---------------------------------------------------------------------------
 # Module helpers
 # ---------------------------------------------------------------------------
+
+
+def _preview(response: str, limit: int = 120) -> str:
+    """
+    Return the opening of a reply, for an error message.
+
+    "is not valid JSON" says nothing about *what* came back, which is the
+    one thing needed to tell a truncated object from a refusal from a model
+    that answered in prose. Whitespace is collapsed so the preview stays on
+    one line, and it is clipped: the reply can be thousands of characters.
+    """
+    text = " ".join(response.split())
+    if len(text) <= limit:
+        return repr(text)
+    return repr(text[:limit] + "…")
 
 
 def _keyword_order(job_analysis: JobAnalysis) -> List[str]:

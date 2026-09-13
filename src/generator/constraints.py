@@ -19,7 +19,7 @@ words the resume already uses, and it does not try to.
 """
 
 import re
-from typing import Iterable, List, Set
+from typing import Iterable, List, Optional, Set
 
 from src.parser.models import Resume
 
@@ -120,16 +120,30 @@ def source_numbers(resume: Resume) -> Set[str]:
     return numbers
 
 
-def enforce_strict(source: Resume, generated: Resume) -> None:
+def enforce_strict(
+    source: Resume, generated: Resume, universe: Optional[Resume] = None
+) -> None:
     """
-    Raise if the generated resume introduces facts the source does not support.
+    Raise if the generated resume introduces facts the canonical data does not support.
 
     Parameters
     ----------
     source:
-        The canonical resume.
+        The canonical resume this run was built from.
     generated:
         The resume produced by the Generator.
+    universe:
+        The full set of canonical facts available, when it is wider than
+        ``source``. Defaults to ``source``, which is the behaviour every caller
+        had before the Knowledge Base existed.
+
+        Since task 020 the pipeline passes the whole Knowledge Base here. Task
+        020 §18 is explicit that "the Knowledge Base provides the factual
+        universe available to Strict mode", and that is a correction rather
+        than a loosening: before, a fact sitting in a role-specific resume this
+        run did not happen to draw from counted as invention. It was always
+        canonical and human-verified. Strict mode still fabricates nothing —
+        it can simply now see everything the candidate has actually done.
 
     Raises
     ------
@@ -138,9 +152,9 @@ def enforce_strict(source: Resume, generated: Resume) -> None:
         offending value and where it appeared, so a failed generation is
         diagnosable without re-running it.
     """
-    vocabulary = source_vocabulary(source)
-    _check_terms(generated, vocabulary)
-    _check_numbers(source, generated)
+    canonical = universe if universe is not None else source
+    _check_terms(generated, source_vocabulary(canonical))
+    _check_numbers(canonical, generated)
 
 
 # ---------------------------------------------------------------------------

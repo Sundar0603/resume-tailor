@@ -3,8 +3,9 @@
 Dense reference for Resume Tailor. Attach this to a new task session instead of
 re-exploring the codebase.
 
-Status as of the end of task 019 (CLI orchestration).
-Baseline: **1503 tests passing, 3 skipped** (1398 / 1 after task 018); 83 of
+Status as of the end of task 020 (Knowledge Base).
+Baseline: **1840 tests passing, 3 skipped** (1608 before task 020, 1600 after
+the §12 content-integrity pass); 83 of
 those need a TeX distribution and skip when none is on PATH. The other two
 skips are revision-dependent and skip when the fixture resume already fits one
 page -- that path is covered offline by `TestTheRevisionBranchIsTaken`.
@@ -15,6 +16,8 @@ Update this file at the end of each task; do not rewrite it.
 ## 1. Pipeline and stage status
 
 ```
+Knowledge Base         ✅ 020   (the canonical source — see §13)
+  → Retrieval            ✅ 020
 Markdown Resume
   → Resume Parser        ✅ 002, 003, 004
   → Resume Validator     ✅ 005
@@ -398,6 +401,12 @@ max_tokens=8192)` — same greedy knobs, bigger budget.
 Ollama specifics (`src/providers/ollama.py:78-105`): `json_mode` → `format="json"`,
 `max_tokens` → `num_predict`, and a load-bearing `"think": False`.
 
+**`json_mode` is a request, not a guarantee.** Measured on Ollama 0.31.1:
+`qwen3:1.7b` honours `format="json"` (and a JSON schema), while
+`qwen3.6:latest` — the configured model — ignores both and answers in prose
+when it feels like it. Nothing downstream may assume a reply is JSON because
+`json_mode` was set; that is why the Generator retries (§10b).
+
 **Two exception families, both caught by the CLI:**
 - `src/providers/base.py`: `ProviderError` → `AuthenticationError`,
   `ConnectionError`, `RateLimitError`, `ProviderResponseError`.
@@ -761,7 +770,18 @@ ResumeGenerator(provider).generate(
 - **Validates internally**: errors raise `GeneratorResponseValidationError`,
   warnings land on `generator.last_warnings`, soft failures on
   `generator.last_discarded`.
-- **No retries**, matching the rest of the codebase.
+- **Three attempts per section** (`GENERATOR_MAX_ATTEMPTS`, `sampling.py`).
+  `_call` re-asks when the reply is empty or carries no parseable JSON object;
+  everything else — a schema violation, a missing entity id, a transport
+  failure — raises on the first attempt, because a second sample will not
+  repair it. **Each retry re-rolls the seed** (`generator_options(temperature,
+  seed=...)`): the shared seed is fixed at 42, so an unchanged retry reproduces
+  the bad reply token for token. Measured on the failure that motivated this:
+  the summary prompt for a Tanium JD returned bare prose at seed 42 and valid
+  JSON at 43 and 44. The parse error now also quotes the opening of the reply
+  (`_preview`), which is what distinguishes prose from a truncated object.
+  The Planner and the Analyzer still have no retry, and are exposed to the
+  same failure.
 
 Live baseline on `qwen3.6:latest`, `content/backend_resume.md` against
 `tests/fixtures/job_descriptions/backend.md`: strict 46 s, aggressive 41 s
@@ -2748,3 +2768,373 @@ covering the path.**
   parser strips it. The serializer emits values verbatim and does not raise,
   because the loss is cosmetic — unlike the three silent-truncation cases,
   which do raise.
+
+---
+
+## 12. Content data integrity — the Triage Studio link (2026-09-12)
+
+**The defect.** Every source resume gave the **Triage Studio** project
+`Repository: https://github.com/Sundar0603/Daily-Studies`. `Daily-Studies` is an
+unrelated Vue 3 / Spring Boot / MySQL study tracker; Triage Studio is the
+Python / OpenAI / MCP / CDP agent. The pairing was wrong in all four
+`content/*_resume.md` files from the first commit, so every resume ever
+generated shipped a "Link" anchor pointing at the wrong repository —
+`NetApp-SoftwareEngineer`, `Cisco-DevOpsEngineer`, `Engineer` and
+`UnitedAirlinesBusinessServicesPvtLtd-SrEngineerCybersecurity` all carry it.
+
+**Why nothing caught it.** The link is *data*, and every stage treats data as
+truth. The parser accepts any string for `Repository`, the renderer wraps it in
+`\href` without inspection (`latex_renderer.py:376`), the compiler typesets it,
+and the Quality Gate judges geometry, not meaning. The Validator never compares
+projects to source at all — projects may be `GENERATED` — so a wrong URL
+travels the whole chain with every stage reporting success. **`content/` had no
+tests of any kind.** That was the hole, not a bug in `src/`.
+
+**The runtime vector was already closed.** `_apply_project`
+(`generator.py:777`) pins `repository=existing.repository` by entity id, so a
+rewrite cannot move a URL between projects, and a `GENERATE`d project gets
+`repository=None` — "a repository URL cannot be invented". Both are pinned by
+`test_rewrite_preserves_id_source_and_repository` and
+`test_generated_project_never_gets_a_repository`. Nothing in `src/` needed
+changing.
+
+**The fix.** The `Repository:` line was removed from the Triage Studio block in
+all four content files. There is no public `Sundar0603/triage-studio` repo, so
+the project now renders with no link, exactly as SOCrates already did. The one
+remaining content link, `Resume Tailor → resume-tailor`, is consistent.
+
+**New suite — `tests/content/`.** The first tests that read the real
+`content/*.md` off disk rather than a factory fixture. The invariant: *a
+repository URL must be evidently about the project that owns it*. Ownership is
+evidenced by a shared significant token between the project name and the URL's
+last path segment — `Triage Studio` / `triage-studio` share two, `Triage
+Studio` / `Daily-Studies` share none. Tokens under 3 characters and generic
+filler (`app`, `the`, `project`, `repo`) are discarded so no slug can claim any
+project. Also checked: no two projects share a URL, every URL is absolute
+`https://`, and the rendered LaTeX contains no project anchor no project owns.
+
+Two guards against a green-but-vacuous suite, both worth keeping:
+`test_at_least_one_source_resume_exists` (the glob matched something) and
+`TestTheOwnershipRuleActuallyCatchesMismatches`, which feeds the exact
+historical pairing back through the rule and requires it to be **rejected**.
+
+Verified by reintroducing the defect: the original URL fails 4 tests across the
+data and rendered-LaTeX layers, and an arbitrary different wrong repo
+(`queuing-system`) still fails 2 on the general rule — so the check is not
+merely a hardcoded string match.
+
+**Test count: 1554 → 1600 passing, 3 skipped, 0 failures.** (§0's "1503"
+predates this task by several changes; the 1554 figure is the measured
+pre-change baseline.)
+
+**The shipped United Airlines PDF was rebuilt, not re-tailored.** The link
+fragment was cut from `artifacts/final/resume.tex` and recompiled with
+`pdflatex`; the result is one page and passes the Quality Gate with zero
+issues, as did the control rebuild of the unmodified tex. `Resume.pdf` was
+replaced; `artifacts/` is untouched and still holds the original run record
+(`artifacts/final/resume.pdf` is the byte-identical original). The other three
+affected resumes were left alone.
+
+---
+
+## 13. Knowledge Base and retrieval (task 020)
+
+The four `content/*.md` resumes stopped being the source of truth. A single
+**Knowledge Base** holds every canonical fact, and each run assembles the
+subset a job calls for.
+
+```
+Knowledge Base
+      ↓
+JD Analyzer ──→ JobAnalysis
+      ↓
+Knowledge Base Retrieval ──→ KnowledgeBaseRetrieval + a canonical Resume
+      ↓
+Resume Planner → Generator → Validator → … (all unchanged)
+```
+
+### Why, with the numbers
+
+The four resumes are mutually incomplete *by design*, so a fact's availability
+depended on which file it landed in. Measured on the real content:
+
+| fact | lives in | reachable from a Full Stack + AI JD before? |
+|---|---|---|
+| 4 MCP / agentic-security bullets | `cybersecurity_ai_resume.md` only | **no** |
+| Resume Tailor project | `cybersecurity_ai_resume.md` only | **no** |
+| Vue/Pinia component-library bullet | `fullstack_resume.md` only | only from fullstack |
+| Redis rate limiting, SOC query partitioning | `backend_resume.md` only | only from backend |
+
+The merged Knowledge Base holds **62 skills in 9 categories, a 20-bullet pool
+on the full-time role, 9 on the internship, 3 projects and 4 summary
+variants** — more than any single resume, and losing nothing
+(`tests/knowledge/test_migration_completeness.py` asserts every highlight,
+skill, technology and domain from all four survives).
+
+### The one design move that keeps this small
+
+**Retrieval ends by assembling an ordinary `Resume`** (`src/retrieval/assemble.py`).
+Everything downstream already speaks `Resume`, so the Planner, Generator,
+Validator, Renderer, Compiler, Quality Gate, Revision Engine and Reporter are
+untouched.
+
+The consequence worth remembering: `ResumeValidator.validate(source_resume=...)`
+**keeps its exact meaning**. The source is still a resume of purely canonical
+entities — assembled for this job rather than read off a file. No rule was
+relaxed, and §20's "do not weaken validation" cost nothing.
+
+### Storage — `knowledge/knowledge_base.md`
+
+Same Markdown dialect as `content/*.md`, so `src/helpers/_section_utils.py` does
+the work. **Not under `content/`**: `src/cli/tailor.py`'s `discover_resumes`
+globs `content/*.md` and would offer it as a resume.
+
+Two differences from `ResumeParser`:
+
+- **Ids are declared, never derived.** Every block carries `Id: exp_001`. A
+  missing, duplicate or wrong-prefix id raises. `assign_sequential_ids` is
+  positional and correct for a runtime id — inserting a project at the top
+  would renumber every project below it and last week's retrieval result would
+  silently mean something else.
+- **`# Summaries` is plural.** `Resume.summary` is required and the four
+  resumes each carry a different one; keeping one would discard three pieces of
+  canonical writing. Retrieval picks the best-matching variant as the base.
+
+Highlight ids are **content-derived**: `{entity_id}.h_{sha1(normalised)[:8]}`
+(`src/knowledge/identifiers.py`). Stable across runs *and* across reordering,
+with nothing to maintain by hand. Rewording a bullet mints a new id, which is
+correct — and nothing persists these between runs anyway.
+
+### A wrapped bullet now raises instead of truncating
+
+§10c records that `get_list` ends a list at the first non-bullet line, so a
+bullet wrapped onto a second line **silently discards every later bullet in
+that list**. Hit immediately while writing the first fixture.
+
+Every `content/*.md` bullet is already one long line, so `WrappedBullet` forbids
+nothing the format allowed. It matters here because the Knowledge Base is the
+one file a human edits directly and holds bullets 60 words long — exactly where
+someone reaches for a line break. `_checked_list` guards every list field.
+
+### Retrieval is deterministic, and that was a decision
+
+`src/retrieval/` — `aliases`, `scoring`, `selection`, `retriever`, `assemble`.
+**No LLM call, no provider parameter, no constructor at all** (pinned:
+`"__init__" not in vars(KnowledgeBaseRetriever)`).
+
+A sixth model call would cost 15–25 s of a 180 s budget that five calls already
+have most of, and surrender reproducibility. Almost all the semantic distance
+that matters is *vocabulary* — a posting says "Large Language Models" where the
+resume says "LLM" — and `aliases.py` closes that exactly, inspectably, for
+nothing. When a ranking looks wrong the cause is a line in a file, not a
+sampling temperature.
+
+Two weightings multiply: how much the job cares (`required_skills`/`technologies`
+3.0 → prose 0.5) by where the entity says it (`technologies` 3.0 →
+`highlights` 1.0). Prose words are filtered through `GENERIC_TERMS` first, or
+"development" and "systems" appear in every posting and every bullet and the
+ranking says nothing. Ties break on Knowledge Base id — without it the same
+inputs could produce a different resume.
+
+### The duplicate threshold was measured, not chosen
+
+Keeping every phrasing variant (decided with the user) means two versions of one
+fact can both rank well. Over the **296** highlight pairs in the real Knowledge
+Base the overlap coefficient is bimodal:
+
+| band | pairs | what they are |
+|---|---|---|
+| ≤ 0.43 | 280 (95%) | genuinely different facts |
+| 0.60 – 1.00 | 16 | the same fact, reworded for another resume |
+
+The nearest values either side of the gap are **10/21 = 0.476** and **3/5 =
+0.600**, so every threshold in (0.476, 0.600] flags the identical 16 pairs.
+`DUPLICATE_THRESHOLD = 0.55` is the middle of that plateau — float wobble cannot
+flip a verdict.
+
+**Overlap coefficient, not Jaccard.** The rewordings differ mostly by *added*
+words and Jaccard punishes that twice by inflating the union. The
+rule-management pair scores **0.41 by Jaccard and 0.60 by overlap**; only the
+second separates it from the distinct pairs.
+
+A duplicate **skips rather than stops**, so it does not consume the budget and
+the next genuinely different fact moves into the freed slot. Both phrasings stay
+canonical; the report says which restates which.
+
+### Merging four resumes creates redundant skill categories
+
+Found by inspecting the merged file, not by a test failing. Each of the four
+resumes named its own skill categories, so the union holds overlapping ones —
+and one is a **strict subset** of another:
+
+| category | skills | contained in |
+|---|---|---|
+| `AI and Automation` | 4 | `AI and Agentic Systems` (13) — all 4 |
+| `Databases` | `[MySQL]` | `Backend` **and** `Tools` |
+
+A resume printing two AI headings, one a subset of the other, reads as padding.
+
+Measured over the 36 category pairs: **three pairs at exactly 1.000, every
+other pair at 0.200 or below** — not merely bimodal, a gap.
+`SKILL_SUBSUMPTION_THRESHOLD = 0.9` sits well inside the empty band while still
+requiring near-total containment. Comparison runs through the alias map, so a
+category listing `Vue` is recognised as covered by one listing `Vue.js`.
+
+A skipped category **does not consume the budget**, so the next genuinely
+different one moves up — the same shape as the highlight duplicate guard. On the
+Full Stack + AI JD, skipping `AI and Automation` promotes `Security`. Nothing
+factual is lost: every skill in a dropped category is already on the page.
+
+**The Knowledge Base keeps both categories.** This is a presentation decision
+made per run, not a curation decision made once — merging them in the file is
+the user's taxonomy call.
+
+### Budgets nest, and a test says so
+
+```
+Validator minimum  <  revision floor  <  what retrieval hands over
+```
+
+`FULL_TIME_HIGHLIGHTS 6` (floor 5, Validator warns above 8),
+`INTERNSHIP_HIGHLIGHTS 3` (floor 3), `MAX_PROJECTS 3`,
+`MAX_PROJECT_HIGHLIGHTS 6` (Validator's warning ceiling),
+`MAX_SKILL_CATEGORIES 6`. All in `selection.py`, single home, pinned like
+`floors.py`. `MIN_PROJECTS` is stated in **three** places for three layers, so a
+test asserts all three agree rather than trusting them to.
+
+**Experience order is Knowledge Base order and must stay that way** — the
+Validator compares experiences positionally (`validator.py:333`). Highlights
+*within* an experience are reordered freely; that is the point.
+
+### Strict mode got wider, not looser
+
+`generate(canonical_universe=...)` and `enforce_strict(source, generated,
+universe)`. The pipeline passes `knowledge_base.as_resume()`.
+
+Before, strict measured invention against one role-specific resume, so a fact
+sitting in another file counted as fabrication. It was always canonical and
+human-verified. §18 is explicit that the Knowledge Base is strict mode's factual
+universe. Both parameters default to the old behaviour, so every existing caller
+is unchanged.
+
+### CLI
+
+```bash
+resume-tailor tailor [--kb PATH] [--jd PATH] [--mode ...] [--resume PATH]
+```
+
+`--kb` defaults to `knowledge/knowledge_base.md` and needs no decision from the
+user (§21). `--resume` is the opt-in escape hatch, and **accepts a directory**
+to get the old discovery prompt — which is why `--content-dir` is gone rather
+than left as a flag that no longer influences a default run. A resume run prints
+"Canonical data outside it is not available to this run", so the flag is not
+read as equivalent.
+
+### Generated data never enters the Knowledge Base
+
+Enforced by **unreachability, not discipline**: every entity handed on is a deep
+copy, so no downstream stage can reach back through the retrieval result. Pinned
+three ways — the file's sha256 is compared before and after a run, the in-memory
+object is compared, and generated ids are asserted disjoint from canonical ones.
+
+### Confirmed live, 2026-09-13
+
+Real provider (`qwen3.6:latest`, served from a Mac Studio over an ssh forward),
+real renderer, compiler, gate, engine and reporter. Knowledge Base source,
+`tests/fixtures/job_descriptions/fullstack.md` (a Full Stack **AI** posting —
+LLMs, MCP Servers, RAG, agents).
+
+| run | wall | pages | passed | projects | generated | revision steps | revision LLM |
+|---|---|---|---|---|---|---|---|
+| aggressive | 1m26s | 1 | ✅ | 2 | 1 | 9 | 0 |
+| strict | 1m20s | 1 | ✅ | 2 | **0** | 9 | 0 |
+
+Wall clock is inside the 180 s budget and matches §10j's 67–80 s plus the extra
+LLM latency of a remote host; **retrieval itself costs no measurable time**, as
+an LLM-free stage should. §10h's "the deterministic path needs no model" holds
+again: zero revision LLM calls in both.
+
+**The cross-role claim, verified on the delivered PDF.** Extracted text from
+both final PDFs carries, simultaneously:
+
+| content | lives only in | aggressive | strict |
+|---|---|---|---|
+| **MCP** work | `cybersecurity_ai_resume.md` | ✅ | ✅ |
+| `Vue` | `fullstack_resume.md` | ✅ | ✅ |
+| `Spring Boot`, `Redis` | `backend_resume.md` | ✅ | ✅ |
+
+**No single `content/*.md` can produce that combination**, which is the whole
+point of the task. The *strict* column is the stronger evidence: strict mode
+fabricates nothing and its report confirms `generated_projects: []`, so every
+one of those terms is canonical reuse drawn from the Knowledge Base.
+
+`knowledge/knowledge_base.md` is **byte-identical** (sha256 compared) after both
+runs.
+
+### The Resume Tailor project did not reach either PDF, and the report says why
+
+It was retrieved and selected in both runs — this is not a retrieval failure —
+and then lost downstream for two *different* reasons:
+
+- **aggressive**: planned `REMOVE`, effective `REMOVED`. The Planner dropped the
+  lowest-scoring canonical project (21.0 against 68.25 and 60.5) and spent the
+  aggressive licence on a generated one, `proj_004 Semantic Security Knowledge
+  Base`, which survived to the PDF.
+- **strict**: planned `REMOVE`, effective `TRIMMED_FOR_PAGE_FIT`. The Revision
+  Engine removed it at step 7 to reach one page.
+
+Neither is a task 020 defect, and both are exactly the reconciliation §10i
+exists to surface — a plan-only report would have stated the aggressive case as
+a clean removal and missed the strict one entirely.
+
+**The aggressive case is worth a second look as a *generation* question.** A
+real, canonical, on-topic LLM project was displaced by an invented one for a JD
+asking about RAG and vector databases. That is the mirror of §10i's
+"a generation call was spent on a project that never reached the PDF", and the
+honest position is the same one recorded there: one observation is not a
+pattern.
+
+### Test counts
+
+`tests/knowledge/` 64, `tests/retrieval/` 120, plus the pipeline, CLI and
+report additions. **1608 → 1840 passing, 3 skipped.**
+
+### Gotchas found on the way
+
+- **`.venv` is Python 3.14**, not 3.9 as §10 says. `pyproject.toml` still
+  declares `>=3.9` and the codebase still uses `typing.List`/`Optional`, so keep
+  writing 3.9-compatible annotations.
+- **PyYAML *is* installed** — §10's "Not installed: … PyYAML" is stale;
+  `src/parser/metadata_parser.py` has imported it since task 002.
+- **Two deliberate divergences from the source resumes**, both decided with the
+  user and both encoded in `test_migration_completeness.py` rather than left as
+  comments.
+
+  *Skill naming variants.* Two resumes list `Vue`, one lists `Vue.js`. Carrying
+  both meant one generated resume could ship the same skill twice under two
+  names, so the Knowledge Base keeps only `Vue.js`. Coverage in the migration
+  test is therefore checked **through the alias map** — not a weakening, since
+  a skill with no canonical equivalent still fails. Verified by deleting
+  `Pinia` and watching two tests fail.
+
+- **The four resumes disagreed on the contact email.** `sundars0603@` on
+  backend and fullstack, `sundarselvam3@` on the two cybersecurity variants.
+  The Knowledge Base uses **`sundarselvam3@gmail.com`**, decided with the user;
+  the migration test excludes email and asserts the other four contact fields
+  match all four resumes.
+- **`tests/fixtures/job_descriptions/fullstack.md` is already a Full Stack *AI*
+  JD**, naming LLMs, MCP Servers, RAG and agents. No new fixture was needed for
+  the §29 smoke test.
+- **The provider may be a *remote* Ollama over an ssh port-forward, and the
+  forward is IPv6-only.** `~/.resume-tailor/config.toml` carries
+  `host = "127.0.0.1:11434"` — IPv4 — while the forward listens on `[::1]:11434`.
+  The two can hold "port 11434" simultaneously on different stacks, so `ollama`
+  CLI commands and a resume-tailor run can silently reach *different servers*.
+  If a run reports "could not connect" while `ollama list` works, this is why:
+  set the host to `localhost:11434` or `[::1]:11434`.
+- **The offline `ScriptedProvider` cannot verify final-PDF content.** It returns
+  canned highlights that *replace* the source bullets, so a chain test proves
+  the stages fit together but never that retrieved canonical text reaches the
+  PDF. Only a real model rewrites *from* the source bullets. That is precisely
+  the gap §29's live smoke test exists to close — do not read a green offline
+  chain test as covering it.

@@ -13,7 +13,7 @@ from src.renderer.exceptions import RendererError
 
 from .conftest import make_resume
 
-TEMPLATE_NAMES = ["backend", "fullstack", "cybersecurity"]
+TEMPLATE_NAMES = ["default", "backend", "fullstack", "cybersecurity"]
 
 
 class TestLoading:

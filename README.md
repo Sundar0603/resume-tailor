@@ -1,14 +1,14 @@
 # Resume Tailor
 
-An AI-powered CLI that rewrites a canonical Markdown resume to fit a specific job
-description, renders it through a frozen LaTeX template, compiles it, checks the
-page geometry, shortens it to one page when needed, and writes a report
-explaining every change.
+An AI-powered CLI that builds a resume for a specific job description out of a
+hand-maintained Knowledge Base of canonical career facts, renders it through a
+frozen LaTeX template, compiles it, checks the page geometry, shortens it to one
+page when needed, and writes a report explaining every change.
 
 ```text
-Source Resume + Job Description + Mode
+Knowledge Base + Job Description + Mode
     ↓
-JD Analyzer → Resume Planner → Resume Generator
+JD Analyzer → Retrieval → Resume Planner → Resume Generator
     ↓
 Validator → LaTeX Renderer → pdflatex → Quality Gate
     ↓
@@ -99,38 +99,60 @@ prompts.
 resume-tailor tailor
 ```
 
-That form discovers your canonical resumes, asks which one to use if there is
-more than one, and then waits for you to paste a job description.
+That form reads the **Knowledge Base** and waits for you to paste a job
+description. Nothing else is asked: retrieval decides which experiences,
+projects and skills the posting actually calls for.
 
 | option | default | meaning |
 |---|---|---|
-| `--resume PATH` | *discovered* | Use this resume. Skips discovery entirely. |
+| `--kb PATH` | `knowledge/knowledge_base.md` | The canonical source of truth. |
+| `--resume PATH` | — | Tailor from one role-specific resume instead. A directory prompts you to pick from it. |
 | `--jd PATH` | *paste on stdin* | Read the job description from a file. |
 | `--mode aggressive\|strict` | `aggressive` | How much licence the AI has. See [Modes](#modes). |
-| `--content-dir DIR` | `content` | Where canonical resumes live. |
 | `--output DIR` | *timestamped* | Override the run's artifact directory. |
 
 **Examples**
 
 ```bash
-# Fully interactive: pick a resume, paste the posting, press Ctrl+D
+# The normal way: paste the posting, press Ctrl+D
 resume-tailor tailor
 
 # Everything specified
 resume-tailor tailor \
-    --resume content/backend_resume.md \
-    --jd tests/fixtures/job_descriptions/backend.md \
+    --jd tests/fixtures/job_descriptions/fullstack.md \
     --mode aggressive
 
 # Pipe a job description in
-pbpaste | resume-tailor tailor --resume content/backend_resume.md --mode strict
-cat posting.txt | resume-tailor tailor
+pbpaste | resume-tailor tailor --mode strict
+
+# Tailor from one role-specific resume, for comparison
+resume-tailor tailor --resume content/backend_resume.md --jd posting.md
 ```
 
-**Choosing a resume.** Everything matching `*.md` in the content directory is a
-candidate. None is an error; exactly one is selected silently; several are
-offered as a numbered list. There is no `--template` flag — each resume names its
-own template in its front matter.
+### The Knowledge Base
+
+`knowledge/knowledge_base.md` holds **every** canonical career fact — every
+experience bullet, project, skill and summary variant — regardless of which
+role-specific resume happens to present it.
+
+That matters because the four resumes in `content/` are role-specific and
+therefore incomplete relative to one another. The AI/MCP work and the Resume
+Tailor project exist only on the cybersecurity-AI resume, so before the
+Knowledge Base a Full Stack + AI posting could not reach them at all. Now it
+can, and the report says which canonical facts it used and which it passed over.
+
+Two rules govern it:
+
+- **Everything in it is canonical and human-verified.** You maintain it by hand.
+- **Nothing generated is ever written back into it.** The Knowledge Base is a
+  read-only input during a run, enforced by construction rather than by
+  convention.
+
+The four resumes stay on disk as curated reference views. They are no longer
+authoritative, and `--resume` is the opt-in way to tailor from one — which
+limits the run to that file's contents.
+
+There is no `--template` flag: every run renders through `templates/default.tex`.
 
 **Pasting a job description.** When `--jd` is omitted the command reads stdin to
 EOF. Paste, then press **Ctrl+D** (Ctrl+Z on Windows). There is no size limit.
@@ -299,11 +321,14 @@ not a hang. Verify with `lsof -i :11434` (ssh should be LISTEN) and
 ## Layout
 
 ```text
-content/            canonical resumes (Markdown, one per target role)
+knowledge/          the Knowledge Base: every canonical fact, one file
+content/            curated role-specific views (no longer authoritative)
 templates/          frozen LaTeX templates; the AI never touches these
   masterTemplates/  the hand-tuned originals, kept for reference
 src/
   cli/              the four commands, plus shared plumbing in _common.py
+  knowledge/        Knowledge Base → KnowledgeBase, with declared stable ids
+  retrieval/        job → the canonical evidence it calls for (no LLM)
   parser/           Markdown → Resume, and the domain models
   validation/       structural rules the generated resume must satisfy
   analyzer/         job description → JobAnalysis

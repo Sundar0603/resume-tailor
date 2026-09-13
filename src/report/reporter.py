@@ -31,6 +31,7 @@ from .gate import gate_attempts
 from .models import (
     FinalVerdict,
     Report,
+    RetrievalSummary,
     ResumeIdentity,
     ResumeShape,
     RevisionSummary,
@@ -134,6 +135,42 @@ def revision_summary(revision) -> RevisionSummary:
     )
 
 
+def retrieval_summary(result: PipelineResult):
+    """
+    Project a run's retrieval into the report, or ``None`` when there was none.
+
+    Reads the structured result the Retriever already produced. The Reporter
+    performs no retrieval and re-decides nothing (task 020 §24) — every field
+    here is copied, which is the same rule ``final_verdict`` follows when it
+    takes ``result.passed`` verbatim rather than recomputing it.
+    """
+    if result.retrieval is None:
+        return None
+
+    retrieval = result.retrieval
+    everything = (
+        list(retrieval.summaries)
+        + list(retrieval.experiences)
+        + list(retrieval.projects)
+        + list(retrieval.skill_categories)
+        + list(retrieval.education)
+    )
+    return RetrievalSummary(
+        knowledge_base=(
+            result.knowledge_base.metadata.knowledge_base
+            if result.knowledge_base is not None
+            else ""
+        ),
+        summary_id=retrieval.summary_id,
+        selected=[e.model_copy(deep=True) for e in everything if e.selected],
+        passed_over=[e.model_copy(deep=True) for e in everything if not e.selected],
+        duplicates_dropped=[
+            h.model_copy(deep=True) for h in retrieval.duplicates_dropped()
+        ],
+        supporting_evidence=list(retrieval.supporting_evidence),
+    )
+
+
 class Reporter:
     """
     Builds and renders the record of one tailoring run.
@@ -183,6 +220,7 @@ class Reporter:
                 if result.revision is not None
                 else None
             ),
+            retrieval=retrieval_summary(result),
             planner_discarded=list(result.planner_discarded),
             generator_discarded=list(result.generator_discarded),
             generator_warnings=list(result.generator_warnings),

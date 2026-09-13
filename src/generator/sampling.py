@@ -23,9 +23,14 @@ Three knobs move together here, and moving only one is a common mistake:
 ``num_ctx`` is widened because a generation prompt carries the resume, the job
 analysis and the relevant slice of the plan. ``max_tokens`` stays at the
 default: each call returns one section, not a whole resume.
+
+The fixed seed is also why :data:`GENERATOR_MAX_ATTEMPTS` exists alongside a
+``seed`` parameter. A local model occasionally answers a section with prose
+instead of JSON, and a retry that reuses the seed reproduces that answer
+token for token — so a retry is only worth making with a different one.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from ..analyzer.sampling import deterministic_options
 
@@ -45,8 +50,15 @@ GENERATOR_TOP_K = 40
 #: Nucleus sampling threshold.
 GENERATOR_TOP_P = 0.9
 
+#: How many times one section may be asked for before the run is abandoned.
+#: Each attempt after the first re-rolls the seed; see the module docstring.
+GENERATOR_MAX_ATTEMPTS = 3
 
-def generator_options(temperature: float = GENERATOR_TEMPERATURE) -> Dict[str, Any]:
+
+def generator_options(
+    temperature: float = GENERATOR_TEMPERATURE,
+    seed: Optional[int] = None,
+) -> Dict[str, Any]:
     """
     Return the provider option dict for a generation call.
 
@@ -56,16 +68,22 @@ def generator_options(temperature: float = GENERATOR_TEMPERATURE) -> Dict[str, A
         Sampling temperature. ``0.0`` is accepted and, combined with the
         widened ``top_k``, produces near-deterministic output — useful for
         tests that need a stable response.
+    seed:
+        Overrides the shared deterministic seed. Passed only by a retry,
+        which needs a different sample than the one that failed to parse.
 
     Returns
     -------
     dict
         A fresh dictionary. Mutating it never affects the shared defaults.
     """
-    return deterministic_options(
+    options = deterministic_options(
         temperature=temperature,
         top_k=GENERATOR_TOP_K,
         top_p=GENERATOR_TOP_P,
         num_ctx=GENERATOR_NUM_CTX,
         max_tokens=GENERATOR_MAX_TOKENS,
     )
+    if seed is not None:
+        options["seed"] = seed
+    return options

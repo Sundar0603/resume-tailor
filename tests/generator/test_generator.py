@@ -11,6 +11,7 @@ import copy
 import pytest
 
 from src.generator import (
+    GENERATOR_MAX_ATTEMPTS,
     GenerationConstraintError,
     GeneratorError,
     GeneratorResponseValidationError,
@@ -949,15 +950,91 @@ class TestTransportFailures:
 
     def test_empty_response_raises(self):
         with pytest.raises(InvalidGeneratorResponse):
-            self._run(SequencedProvider(["   "]))
+            self._run(SequencedProvider(["   "] * GENERATOR_MAX_ATTEMPTS))
 
     def test_unparseable_json_raises(self):
         with pytest.raises(InvalidGeneratorJSON):
-            self._run(SequencedProvider(["not json at all"]))
+            self._run(
+                SequencedProvider(["not json at all"] * GENERATOR_MAX_ATTEMPTS)
+            )
 
     def test_json_array_raises(self):
         with pytest.raises(InvalidGeneratorJSON):
-            self._run(SequencedProvider(['["a", "b"]']))
+            self._run(SequencedProvider(['["a", "b"]'] * GENERATOR_MAX_ATTEMPTS))
+
+    def test_failure_names_what_came_back(self):
+        """The error carries the reply, so prose is not mistaken for a bug."""
+        provider = SequencedProvider(["not json at all"] * GENERATOR_MAX_ATTEMPTS)
+        with pytest.raises(InvalidGeneratorJSON) as caught:
+            self._run(provider)
+        assert "not json at all" in str(caught.value)
+
+
+_SUMMARY = summary_response("A rewritten summary " + "word " * 25)
+
+
+class TestSectionRetry:
+    """
+    A section is asked for again when the reply cannot be parsed.
+
+    Local models answer a JSON prompt in prose often enough that a single
+    malformed reply used to end a run minutes in. The retry only matters if
+    it samples differently, hence the seed assertions.
+    """
+
+    def _run(self, provider):
+        return ResumeGenerator(provider).generate(
+            source_resume=make_resume(),
+            job_analysis=make_job_analysis(),
+            resume_plan=_summary_rewrite_plan(),
+        )
+
+    def test_prose_reply_is_retried(self):
+        provider = SequencedProvider(
+            ["Cybersecurity Engineer with 2 years at Zoho.", _SUMMARY]
+        )
+        self._run(provider)
+        assert provider.call_count == 2
+
+    def test_empty_reply_is_retried(self):
+        provider = SequencedProvider(["   ", _SUMMARY])
+        self._run(provider)
+        assert provider.call_count == 2
+
+    def test_retry_changes_the_seed(self):
+        provider = SequencedProvider(["not json", _SUMMARY])
+        self._run(provider)
+        first, second = provider.options[0], provider.options[1]
+        assert second["seed"] != first["seed"]
+
+    def test_retry_changes_nothing_else(self):
+        provider = SequencedProvider(["not json", _SUMMARY])
+        self._run(provider)
+        first = dict(provider.options[0])
+        second = dict(provider.options[1])
+        first.pop("seed")
+        second.pop("seed")
+        assert first == second
+        assert provider.prompts[0] == provider.prompts[1]
+
+    def test_attempts_are_bounded(self):
+        provider = SequencedProvider(["not json"] * (GENERATOR_MAX_ATTEMPTS + 1))
+        with pytest.raises(InvalidGeneratorJSON):
+            self._run(provider)
+        assert provider.call_count == GENERATOR_MAX_ATTEMPTS
+
+    def test_transport_failure_is_not_retried(self):
+        provider = FailingProvider(RuntimeError("connection reset"))
+        with pytest.raises(GeneratorError):
+            self._run(provider)
+        assert provider.call_count == 1
+
+    def test_schema_violation_is_not_retried(self):
+        """A reply that parses but does not fit the schema is a real failure."""
+        provider = SequencedProvider(['{"unexpected_key": "value"}'])
+        with pytest.raises(InvalidGeneratorResponse):
+            self._run(provider)
+        assert provider.call_count == 1
 
     def test_schema_violation_raises(self):
         with pytest.raises(InvalidGeneratorResponse):

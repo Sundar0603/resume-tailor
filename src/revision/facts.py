@@ -38,6 +38,7 @@ import re
 from typing import Iterable, List, Sequence
 
 from src.parser.models import Resume
+from src.vocabulary import contains_term
 
 from .models import ProtectedFacts
 
@@ -232,17 +233,6 @@ def verify(facts: ProtectedFacts, compressed: str) -> List[str]:
             reasons.append("lost or generalised term {0!r}".format(term))
 
     return reasons
-
-
-def contains_term(haystack: str, term: str) -> bool:
-    """
-    Return whether ``term`` appears in ``haystack``, case-insensitively.
-
-    Boundaries are "not a letter or digit" rather than ``\\b``, so terms
-    carrying punctuation (``C++``, ``.NET``, ``Node.js``) match correctly.
-    """
-    pattern = r"(?<![0-9A-Za-z]){0}(?![0-9A-Za-z])".format(re.escape(term.strip()))
-    return re.search(pattern, haystack, re.IGNORECASE) is not None
 
 
 def contains_numeric(haystack: str, numeric: str) -> bool:

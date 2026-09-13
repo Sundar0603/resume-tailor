@@ -3,11 +3,17 @@ Tailor command for Resume Tailor — the whole chain, from one command.
 
 ```text
 resume-tailor tailor
-    -> pick a canonical resume
+    -> read the Knowledge Base
     -> paste the job description
+    -> retrieve the canonical evidence the job calls for
     -> run
     -> a submission-ready PDF and three reports
 ```
+
+Since task 020 nothing is picked by hand. The Knowledge Base holds every
+canonical fact and retrieval selects what this job needs, so the user is never
+asked which projects or experiences to use. ``--resume`` still tailors from one
+role-specific resume, for comparison and debugging.
 
 Once the run starts there is **no confirmation step**. Tailoring takes a minute
 or two, and a prompt in the middle of it turns an unattended command into an
@@ -17,7 +23,7 @@ This module is a command, not an orchestrator. ``ResumePipeline`` already
 chains analyze -> plan -> generate -> serialize -> render -> compile -> judge ->
 revise and returns every intermediate artifact; ``Reporter`` already turns that
 result into three files. What lives here is everything the chain deliberately
-does not know about: which resume, which job description, where the artifacts
+does not know about: which canonical source, which job description, where the artifacts
 go, what the user sees while waiting, and what a failure reads like.
 """
 
@@ -25,6 +31,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, NamedTuple, NoReturn, Optional, Tuple
@@ -32,7 +39,6 @@ from typing import Callable, Dict, List, NamedTuple, NoReturn, Optional, Tuple
 import typer
 
 from src.cli._common import (
-    DEFAULT_CONTENT_DIRECTORY,
     FAILURE_GLYPH,
     LLM_ERRORS,
     SUCCESS_GLYPH,
@@ -49,6 +55,9 @@ from src.compiler.exceptions import CompilerError
 from src.generator.exceptions import GeneratorError
 from src.parser.metadata_parser import ParserError
 from src.parser.models import Resume
+from src.knowledge.exceptions import KnowledgeBaseError
+from src.knowledge.knowledge_parser import KnowledgeBaseParser
+from src.knowledge.models import KnowledgeBase
 from src.parser.resume_parser import ResumeParser
 from src.pipeline.exceptions import FinalResumeValidationError
 from src.pipeline.models import PipelineResult
@@ -59,6 +68,7 @@ from src.pipeline.pipeline import (
     STAGE_PLAN,
     STAGE_QUALITY,
     STAGE_RENDER,
+    STAGE_RETRIEVE,
     STAGE_REVISE,
     STAGE_VALIDATE,
     ResumePipeline,
@@ -70,7 +80,14 @@ from src.quality.models import QualityGateResult
 from src.renderer.exceptions import RendererError
 from src.report.exceptions import ReportError
 from src.report.reporter import Reporter
+from src.retrieval.exceptions import RetrievalError
 from src.revision.exceptions import OnePageInfeasibleError, RevisionError
+
+#: The Knowledge Base: the canonical source of truth every run reads by
+#: default since task 020. Deliberately *not* under ``content/``, which
+#: ``discover_resumes`` globs — the Knowledge Base is not a resume, and
+#: offering it as one would be the first thing a new user got wrong.
+DEFAULT_KNOWLEDGE_BASE = "knowledge/knowledge_base.md"
 
 DEFAULT_RUN_ROOT = "output/runs"
 
@@ -98,8 +115,9 @@ STAGE_LOAD = "load"
 STAGE_REPORT = "report"
 
 _STAGE_LABELS = {
-    STAGE_LOAD: "Loading source resume",
+    STAGE_LOAD: "Loading canonical data",
     STAGE_ANALYZE: "Analyzing job description",
+    STAGE_RETRIEVE: "Retrieving canonical evidence",
     STAGE_PLAN: "Planning changes",
     STAGE_GENERATE: "Generating resume",
     STAGE_RENDER: "Rendering LaTeX",
@@ -202,27 +220,59 @@ def select_resume(content_directory: str) -> Path:
 
 def _explicit_resume(resume: str) -> Path:
     """
-    Check a ``--resume`` path before announcing it.
+    Resolve ``--resume`` to one resume file, prompting when given a directory.
 
-    Without this the command ticks "Source resume: nope.md" and only then finds
-    there is no such file, which reads as though the load succeeded.
+    A directory means "pick one from in here", which is what ``--content-dir``
+    used to do when the content directory was the whole workflow. Since task
+    020 the Knowledge Base is the default source and choosing a resume is a
+    deliberate detour, so the two ideas collapse into the one flag that asks
+    for the detour — rather than leaving a ``--content-dir`` option that no
+    longer influences a default run.
+
+    A file is checked before it is announced. Without that the command ticks
+    "Source resume: nope.md" and only then finds there is no such file, which
+    reads as though the load succeeded.
     """
     path = Path(resume)
+    if path.is_dir():
+        return select_resume(str(path))
     if not path.is_file():
         fail(f"Resume file not found: {resume}")
     return path
 
 
-def run_directory(resume_path: Path, mode: PlanningMode) -> Path:
+def _explicit_knowledge_base(kb: str) -> Path:
     """
-    A fresh directory per run, named for the resume, the mode and the clock.
+    Check the Knowledge Base path before announcing it.
 
-    Runs must not overwrite one another, and a name carrying only resume and
+    Same reason as :func:`_explicit_resume`. The message names the default
+    because a fresh checkout has no Knowledge Base yet, and "file not found"
+    alone does not tell anyone what to do about it.
+    """
+    path = Path(kb)
+    if not path.is_file():
+        fail(
+            f"Knowledge Base not found: {kb}",
+            "The Knowledge Base is the canonical source of truth for tailoring.",
+            f"Create it at {DEFAULT_KNOWLEDGE_BASE}, pass --kb <path>, or tailor "
+            "from a single resume with --resume <path>.",
+        )
+    return path
+
+
+def run_directory(source_name: str, mode: PlanningMode) -> Path:
+    """
+    A fresh directory per run, named for the source, the mode and the clock.
+
+    Runs must not overwrite one another, and a name carrying only source and
     mode does exactly that -- a re-run leaves the previous run's report sitting
     beside the new one's PDF with nothing to say it is stale. The timestamp
     never reaches the report, so determinism is unaffected.
+
+    ``source_name`` is the Knowledge Base's own name, or a role-specific
+    resume's file stem when ``--resume`` was used.
     """
-    stem = resume_path.stem.replace("_resume", "")
+    stem = source_name.replace("_resume", "")
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     return Path(DEFAULT_RUN_ROOT) / f"{stem}_{mode.value.lower()}_{stamp}"
 
@@ -364,6 +414,23 @@ def deliver(
 # ---------------------------------------------------------------------------
 
 
+def format_duration(seconds: float) -> str:
+    """
+    Render an elapsed run as a duration a person reads at a glance.
+
+    Whole seconds below a minute and ``m``/``s`` above it: a tailoring run is
+    minutes long, and the tenths that matter when timing a function are noise
+    when the number describes a wait that has already happened. Negative input
+    cannot arise from a monotonic clock and is clamped rather than formatted
+    into a minus sign nobody would trust.
+    """
+    total = max(0, int(round(seconds)))
+    minutes, remainder = divmod(total, 60)
+    if minutes:
+        return f"{minutes}m {remainder}s"
+    return f"{remainder}s"
+
+
 def _print_failing_checks(quality: Optional[QualityGateResult]) -> None:
     """List the blocking findings, so a failure says what is wrong."""
     if quality is None:
@@ -414,6 +481,16 @@ def _fail_for_stage(exc: BaseException) -> NoReturn:
         typer.echo("No report was written: the run did not produce a final resume.")
         raise typer.Exit(code=1)
 
+    if isinstance(exc, RetrievalError):
+        fail(
+            f"Knowledge Base retrieval failed: {exc}",
+            "The Knowledge Base must hold enough canonical data to build a "
+            "valid resume.",
+        )
+
+    if isinstance(exc, KnowledgeBaseError):
+        fail(f"Knowledge Base error: {exc}")
+
     if isinstance(exc, RevisionError):
         fail(f"Revision failed: {exc}")
 
@@ -452,10 +529,18 @@ def _fail_for_stage(exc: BaseException) -> NoReturn:
 
 
 def tailor(
+    kb: str = typer.Option(
+        DEFAULT_KNOWLEDGE_BASE,
+        "--kb",
+        help="Path to the Knowledge Base. This is the canonical source of truth.",
+    ),
     resume: Optional[str] = typer.Option(
         None,
         "--resume",
-        help="Path to a canonical resume. Omit to choose from the content directory.",
+        help=(
+            "Tailor from one role-specific resume instead of the Knowledge Base. "
+            "For comparison and debugging; the Knowledge Base is the default."
+        ),
     ),
     jd: Optional[str] = typer.Option(
         None,
@@ -466,11 +551,6 @@ def tailor(
         "aggressive",
         "--mode",
         help="Tailoring mode: aggressive or strict.",
-    ),
-    content_dir: str = typer.Option(
-        DEFAULT_CONTENT_DIRECTORY,
-        "--content-dir",
-        help="Directory holding the canonical resumes.",
     ),
     output: Optional[str] = typer.Option(
         None,
@@ -490,7 +570,12 @@ def tailor(
     ),
 ) -> None:
     """
-    Tailor a canonical resume to a job description, end to end.
+    Tailor a resume to a job description, end to end.
+
+    Reads the Knowledge Base — every canonical career fact — and selects the
+    experiences, projects and skills the job actually calls for. Nothing has to
+    be chosen by hand. Pass --resume to tailor from one role-specific resume
+    instead, which limits the run to that file's contents.
     """
     print_header("Resume Tailor")
 
@@ -501,18 +586,35 @@ def tailor(
 
     config = load_configuration(config_path)
 
-    resume_path = _explicit_resume(resume) if resume else select_resume(content_dir)
-    typer.echo(f"{SUCCESS_GLYPH} Source resume: {resume_path.name}")
+    # The Knowledge Base is the default and needs no decision from the user:
+    # task 020 §21 is explicit that nobody should be asked which projects or
+    # experiences to use. ``--resume`` is the deliberate opt-out.
+    resume_path = None
+    knowledge_base_path = None
+    if resume:
+        resume_path = _explicit_resume(resume)
+        source_name = resume_path.stem
+        typer.echo(f"{SUCCESS_GLYPH} Source resume: {resume_path.name}")
+        typer.echo(
+            "  Tailoring from one role-specific resume. Canonical data outside "
+            "it is not available to this run."
+        )
+    else:
+        knowledge_base_path = _explicit_knowledge_base(kb)
+        source_name = knowledge_base_path.stem
+        typer.echo(f"{SUCCESS_GLYPH} Knowledge Base: {knowledge_base_path}")
     typer.echo("")
 
     job_description = read_job_description(jd)
 
     provider = build_provider(config)
 
-    destination = Path(output) if output else run_directory(resume_path, resolved_mode)
+    destination = Path(output) if output else run_directory(source_name, resolved_mode)
 
+    started = time.perf_counter()
     result, reports = _execute(
         resume_path=resume_path,
+        knowledge_base_path=knowledge_base_path,
         job_description=job_description,
         mode=resolved_mode,
         destination=destination,
@@ -523,12 +625,14 @@ def tailor(
         reports,
         run_directory=destination,
         delivery_root=deliver_to or DEFAULT_DELIVERY_ROOT,
+        elapsed=time.perf_counter() - started,
     )
 
 
 def _execute(
     *,
-    resume_path: Path,
+    resume_path: Optional[Path],
+    knowledge_base_path: Optional[Path],
     job_description: str,
     mode: PlanningMode,
     destination: Path,
@@ -539,15 +643,24 @@ def _execute(
 
     Every failure funnels through one place so no path can exit with a
     half-drawn progress line or an unlabelled traceback.
+
+    Exactly one of ``resume_path`` and ``knowledge_base_path`` is given; the
+    pipeline enforces that too, so a caller cannot slip past it.
     """
     progress = Progress()
 
     try:
         progress.announce(STAGE_LOAD)
-        source_resume = _parse_resume(resume_path, progress)
+        source_resume = None
+        knowledge_base = None
+        if knowledge_base_path is not None:
+            knowledge_base = _parse_knowledge_base(knowledge_base_path, progress)
+        else:
+            source_resume = _parse_resume(resume_path, progress)
 
         result = ResumePipeline(provider).run(
             source_resume=source_resume,
+            knowledge_base=knowledge_base,
             job_description=job_description,
             mode=mode,
             output_directory=str(destination),
@@ -573,17 +686,26 @@ def _print_outcome(
     *,
     run_directory: Path,
     delivery_root: str,
+    elapsed: Optional[float] = None,
 ) -> None:
     """
-    Say what happened and where the deliverables are.
+    Say what happened, how long it took, and where the deliverables are.
 
     A run that did not clear the gate still gets its report -- that is when it
     is most worth having -- but never the word "Done." and never a zero exit.
     It is also never delivered, and so keeps its working directory: the
     delivery directory holds resumes that are ready to send, and one that
     failed the gate is not.
+
+    The elapsed time is printed before the verdict, so it is reported for a
+    failed run too: a run that spent four minutes to fail is worth knowing
+    about, and the failing branch exits before it could be printed later.
     """
     typer.echo("")
+
+    if elapsed is not None:
+        typer.echo(f"Time taken: {format_duration(elapsed)}")
+        typer.echo("")
 
     if not result.passed:
         _print_failing_checks(result.quality)
@@ -632,6 +754,15 @@ def _deliver_or_warn(
         )
         typer.echo(f"  Artifacts are still in {run_directory}")
         return None
+
+
+def _parse_knowledge_base(path: Path, progress: Progress) -> KnowledgeBase:
+    """Parse the Knowledge Base, naming the stage if it fails."""
+    try:
+        return KnowledgeBaseParser().parse(str(path))
+    except KnowledgeBaseError as exc:
+        progress.abandon()
+        fail(f"Failed to parse the Knowledge Base: {exc}")
 
 
 def _parse_resume(resume_path: Path, progress: Progress) -> Resume:

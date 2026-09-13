@@ -158,8 +158,6 @@ Name: Triage Studio
 
 Type: Personal
 
-Repository: https://github.com/Sundar0603/Daily-Studies
-
 Technologies:
 
 - Python

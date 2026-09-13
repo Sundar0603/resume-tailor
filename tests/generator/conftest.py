@@ -48,12 +48,15 @@ class FailingProvider(LLMProvider):
 
     def __init__(self, exc: Exception) -> None:
         self._exc = exc
+        #: Counted so a test can assert a failure was not retried.
+        self.call_count = 0
 
     def generate(
         self,
         prompt: str,
         options: Optional[Dict[str, Any]] = None,
     ) -> str:
+        self.call_count += 1
         raise self._exc
 
 

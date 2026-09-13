@@ -28,6 +28,7 @@ from src.analyzer.models import JobAnalysis
 from src.parser.models import EntitySource
 from src.planner.models import PlanAction, PlanningMode
 from src.quality.models import QualityIssueCode, QualityStage, ResumeSection
+from src.retrieval.models import RetrievedEntity, RetrievedHighlight
 from src.revision.models import CompressionOutcome, RevisionStep
 from src.validation.models import ValidationIssue
 
@@ -306,6 +307,40 @@ class FinalVerdict(BaseModel):
     warnings: List[str] = Field(default_factory=list)
 
 
+class RetrievalSummary(BaseModel):
+    """
+    What Knowledge Base retrieval selected, and what it passed over.
+
+    Task 020 §24 asks that a report distinguish canonical Knowledge Base data
+    from data generated during the run. ``EntitySource`` already marks the
+    second; this supplies the first, and adds the thing nothing else in the
+    run records: **what the Knowledge Base held and this resume did not use.**
+
+    That is the question a reader actually asks of a tailored resume — "there
+    is an AI project in there somewhere, why isn't it on this one?" — and
+    before retrieval existed there was no stage that could answer it.
+
+    ``None`` on a report for a run started from a single role-specific resume.
+    """
+
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+    knowledge_base: str = ""
+    summary_id: str = ""
+    selected: List[RetrievedEntity] = Field(default_factory=list)
+    passed_over: List[RetrievedEntity] = Field(default_factory=list)
+    duplicates_dropped: List[RetrievedHighlight] = Field(default_factory=list)
+    supporting_evidence: List[str] = Field(default_factory=list)
+
+    def selected_in(self, kind: str) -> List[RetrievedEntity]:
+        """Return the selected entities of one kind, in selection order."""
+        return [entity for entity in self.selected if entity.kind == kind]
+
+    def passed_over_in(self, kind: str) -> List[RetrievedEntity]:
+        """Return the entities of one kind that were scored and not used."""
+        return [entity for entity in self.passed_over if entity.kind == kind]
+
+
 class Report(BaseModel):
     """
     Everything one tailoring run did, structured before it is rendered.
@@ -328,6 +363,7 @@ class Report(BaseModel):
     final_verdict: FinalVerdict
     changes: List[EntityChange] = Field(default_factory=list)
     revision: Optional[RevisionSummary] = None
+    retrieval: Optional[RetrievalSummary] = None
     planner_discarded: List[str] = Field(default_factory=list)
     generator_discarded: List[str] = Field(default_factory=list)
     generator_warnings: List[ValidationIssue] = Field(default_factory=list)

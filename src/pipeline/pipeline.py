@@ -57,11 +57,15 @@ from src.quality.models import QualityGateResult
 from src.quality.quality_gate import QualityGate
 from src.renderer.latex_renderer import LatexRenderer
 from src.renderer.markdown_serializer import MarkdownSerializer
+from src.knowledge.knowledge_parser import KnowledgeBaseParser
+from src.knowledge.models import KnowledgeBase
+from src.retrieval import KnowledgeBaseRetriever, build_source_resume
+from src.retrieval.models import KnowledgeBaseRetrieval
 from src.revision.models import RevisionResult
 from src.revision.revision_engine import RevisionEngine
 from src.validation.validator import ResumeValidator
 
-from .exceptions import FinalResumeValidationError
+from .exceptions import FinalResumeValidationError, PipelineStageError
 from .models import PipelineResult
 
 DEFAULT_OUTPUT_DIRECTORY = "output/runs"
@@ -74,6 +78,7 @@ MARKDOWN_FILENAME = "generated.md"
 # previous line when the next announcement arrives. Keys, not sentences, so
 # the wording belongs to whoever is displaying them.
 STAGE_ANALYZE = "analyze"
+STAGE_RETRIEVE = "retrieve"
 STAGE_PLAN = "plan"
 STAGE_GENERATE = "generate"
 STAGE_RENDER = "render"
@@ -111,6 +116,7 @@ class ResumePipeline:
             the gate's tolerances without this module growing knobs for them.
         """
         self._parser = ResumeParser()
+        self._retriever = KnowledgeBaseRetriever()
         self._analyzer = JDAnalyzer(provider)
         self._planner = ResumePlanner(provider)
         self._generator = ResumeGenerator(provider)
@@ -139,15 +145,30 @@ class ResumePipeline:
 
     def run(
         self,
-        source_resume: Resume,
-        job_description: str,
+        source_resume: Optional[Resume] = None,
+        job_description: str = "",
         mode: PlanningMode = PlanningMode.AGGRESSIVE,
         output_directory: str = DEFAULT_OUTPUT_DIRECTORY,
         job_name: str = DEFAULT_JOB_NAME,
         on_stage: Optional[Callable[[str], None]] = None,
+        knowledge_base: Optional[KnowledgeBase] = None,
     ) -> PipelineResult:
         """
         Run the full chain and return every intermediate artifact.
+
+        Give **either** ``knowledge_base`` or ``source_resume``, not both.
+
+        ``knowledge_base`` is the path task 020 introduced and the one the CLI
+        takes: the job is analysed, retrieval selects the canonical evidence it
+        calls for, and those entities are assembled into the source resume this
+        run is built and validated against. Nothing downstream changes, because
+        what retrieval hands over is an ordinary ``Resume`` of canonical
+        entities (``src/retrieval/assemble.py``).
+
+        ``source_resume`` is the original single-resume path. It is kept
+        deliberately: it is how a role-specific resume can still be tailored
+        directly, and it is what lets the migration be judged against the
+        behaviour it replaced.
 
         Compilation failure is not raised: the Quality Gate judges it from the
         preserved log and the result carries ``compilation=None``. Every other
@@ -168,8 +189,16 @@ class ResumePipeline:
         minute or more. It is announcement only: the pipeline holds no display
         state and prints nothing.
         """
+        self._require_one_source(source_resume, knowledge_base)
+
         self._announce(STAGE_ANALYZE, on_stage)
         job_analysis = self._analyzer.analyze(job_description)
+
+        retrieval = None  # type: Optional[KnowledgeBaseRetrieval]
+        if knowledge_base is not None:
+            self._announce(STAGE_RETRIEVE, on_stage)
+            retrieval = self._retriever.retrieve(knowledge_base, job_analysis)
+            source_resume = build_source_resume(knowledge_base, retrieval)
 
         self._announce(STAGE_PLAN, on_stage)
         resume_plan = self._planner.plan(source_resume, job_analysis, mode)
@@ -180,6 +209,11 @@ class ResumePipeline:
             job_analysis=job_analysis,
             resume_plan=resume_plan,
             mode=mode,
+            # Strict mode is measured against every canonical fact, not just
+            # the slice retrieval picked for this job (task 020 §18).
+            canonical_universe=(
+                knowledge_base.as_resume() if knowledge_base is not None else None
+            ),
         )
 
         self._announce(STAGE_RENDER, on_stage)
@@ -211,6 +245,8 @@ class ResumePipeline:
             quality = revision.quality
 
         return PipelineResult(
+            knowledge_base=knowledge_base,
+            retrieval=retrieval,
             revision=revision,
             planner_discarded=list(self._planner.last_discarded),
             generator_discarded=list(self._generator.last_discarded),
@@ -226,6 +262,27 @@ class ResumePipeline:
             quality=quality,
             initial_quality=initial_quality,
         )
+
+    @staticmethod
+    def _require_one_source(
+        source_resume: Optional[Resume], knowledge_base: Optional[KnowledgeBase]
+    ) -> None:
+        """
+        Require exactly one source of canonical data.
+
+        Both is an error rather than a precedence rule: a caller passing both
+        has two different ideas about where the facts come from, and silently
+        honouring one of them would make the resume's provenance depend on an
+        argument order nobody wrote down.
+        """
+        if knowledge_base is not None and source_resume is not None:
+            raise PipelineStageError(
+                "Pass either knowledge_base or source_resume, not both."
+            )
+        if knowledge_base is None and source_resume is None:
+            raise PipelineStageError(
+                "A run needs canonical data: pass knowledge_base or source_resume."
+            )
 
     def _compile_and_judge(
         self,
@@ -320,6 +377,30 @@ class ResumePipeline:
             raise FinalResumeValidationError(
                 f"The revised resume failed validation: {detail}"
             )
+
+    def run_from_knowledge_base(
+        self,
+        knowledge_base_path: str,
+        job_description_path: str,
+        mode: PlanningMode = PlanningMode.AGGRESSIVE,
+        output_directory: str = DEFAULT_OUTPUT_DIRECTORY,
+        job_name: str = DEFAULT_JOB_NAME,
+        on_stage: Optional[Callable[[str], None]] = None,
+    ) -> PipelineResult:
+        """
+        Run the chain from a Knowledge Base file and a job description file.
+
+        The file-path counterpart of ``run(knowledge_base=...)``, mirroring
+        ``run_from_file``.
+        """
+        return self.run(
+            knowledge_base=KnowledgeBaseParser().parse(knowledge_base_path),
+            job_description=Path(job_description_path).read_text(encoding="utf-8"),
+            mode=mode,
+            output_directory=output_directory,
+            job_name=job_name,
+            on_stage=on_stage,
+        )
 
     def run_from_file(
         self,

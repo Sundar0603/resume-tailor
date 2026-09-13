@@ -12,6 +12,7 @@ from .pipeline import (
     DEFAULT_JOB_NAME,
     DEFAULT_OUTPUT_DIRECTORY,
     MARKDOWN_FILENAME,
+    STAGE_RETRIEVE,
     ResumePipeline,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "DEFAULT_OUTPUT_DIRECTORY",
     "DEFAULT_JOB_NAME",
     "MARKDOWN_FILENAME",
+    "STAGE_RETRIEVE",
     "PipelineError",
     "PipelineStageError",
 ]

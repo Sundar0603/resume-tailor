@@ -32,6 +32,7 @@ from .prompts import (
     build_summary_prompt,
 )
 from .sampling import (
+    GENERATOR_MAX_ATTEMPTS,
     GENERATOR_MAX_TOKENS,
     GENERATOR_NUM_CTX,
     GENERATOR_TEMPERATURE,
@@ -61,6 +62,7 @@ __all__ = [
     "GENERATOR_TOP_P",
     "GENERATOR_NUM_CTX",
     "GENERATOR_MAX_TOKENS",
+    "GENERATOR_MAX_ATTEMPTS",
     # Canonicalisation
     "canonicalize_summary",
     "canonicalize_experiences",

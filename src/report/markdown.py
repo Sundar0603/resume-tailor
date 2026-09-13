@@ -309,11 +309,101 @@ def _soft_failures(report: Report) -> List[str]:
     return lines
 
 
+_KINDS = (
+    ("experience", "Experiences"),
+    ("project", "Projects"),
+    ("skill_category", "Skill categories"),
+)
+
+
+def _knowledge_base(report: Report) -> List[str]:
+    """
+    Render what the Knowledge Base offered and what this run took from it.
+
+    Empty for a run started from a single role-specific resume, where there was
+    no Knowledge Base and nothing was selected.
+
+    The *passed over* list is the part worth having. A finished resume shows
+    what it contains; only this says what else was canonical and available,
+    which is the difference between "the tool has no AI project" and "the tool
+    weighed it and this job did not call for it".
+    """
+    retrieval = report.retrieval
+    if retrieval is None:
+        return []
+
+    lines = ["## Knowledge Base", ""]
+    lines.append("Canonical source: `{0}`".format(retrieval.knowledge_base or "unknown"))
+    lines.append("")
+    lines.append("Summary variant used: `{0}`".format(retrieval.summary_id))
+    lines.append("")
+
+    for kind, heading in _KINDS:
+        selected = retrieval.selected_in(kind)
+        if not selected:
+            continue
+        lines.append("### {0} used".format(heading))
+        lines.append("")
+        for entity in selected:
+            lines.append(
+                "- `{0}` {1} — score {2}{3}".format(
+                    entity.id,
+                    entity.label,
+                    entity.score,
+                    _matched(entity.matched_terms),
+                )
+            )
+        lines.append("")
+
+    passed_over = [
+        entity
+        for kind, _ in _KINDS
+        for entity in retrieval.passed_over_in(kind)
+    ]
+    if passed_over:
+        lines.append("### Canonical data not used")
+        lines.append("")
+        lines.append(
+            "Held in the Knowledge Base, scored against this job, and not "
+            "selected for this resume."
+        )
+        lines.append("")
+        for entity in passed_over:
+            lines.append(
+                "- `{0}` {1} — score {2}".format(entity.id, entity.label, entity.score)
+            )
+        lines.append("")
+
+    if retrieval.duplicates_dropped:
+        lines.append("### Restatements dropped")
+        lines.append("")
+        lines.append(
+            "Canonical highlights saying the same thing as one already "
+            "selected. Both remain in the Knowledge Base."
+        )
+        lines.append("")
+        for highlight in retrieval.duplicates_dropped:
+            lines.append(
+                "- `{0}` restates `{1}`".format(highlight.id, highlight.duplicate_of)
+            )
+        lines.append("")
+
+    return lines
+
+
+def _matched(terms: List[str]) -> str:
+    """Render the job terms an entity matched, or nothing when it matched none."""
+    if not terms:
+        return ""
+    return " on {0}".format(", ".join("`{0}`".format(t) for t in terms[:8]))
+
+
 def render_report(report: Report) -> str:
     """Render ``report.md``: the human-readable record of the whole run."""
     lines = ["# Tailoring report", ""]
     lines.extend(_run_information(report))
     lines.extend(_job_analysis(report))
+    lines.extend(_knowledge_base(report))
     lines.extend(_resume_plan(report))
     lines.extend(_quality_gate(report))
     lines.extend(_revision(report))

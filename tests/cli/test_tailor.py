@@ -24,6 +24,7 @@ from src.analyzer.provider import LLMProvider
 from src.cli.tailor import (
     delivery_folder_name,
     discover_resumes,
+    format_duration,
     run_directory,
     tailor,
 )
@@ -182,7 +183,7 @@ class TestDiscovery:
 
 class TestSelection:
     def test_no_canonical_resume_is_an_actionable_error(self, config_file, content_dir):
-        result = invoke(config_file, "--content-dir", str(content_dir))
+        result = invoke(config_file, "--resume", str(content_dir))
         assert result.exit_code == 1
         assert "No canonical resume found" in result.stdout
         assert "--resume" in result.stdout
@@ -193,7 +194,7 @@ class TestSelection:
         place(content_dir, "only_resume.md")
         result = invoke(
             config_file,
-            "--content-dir",
+            "--resume",
             str(content_dir),
             "--jd",
             str(jd_file(tmp_path)),
@@ -210,7 +211,7 @@ class TestSelection:
         place(content_dir, "alpha_resume.md", "beta_resume.md", "gamma_resume.md")
         result = invoke(
             config_file,
-            "--content-dir",
+            "--resume",
             str(content_dir),
             "--jd",
             str(jd_file(tmp_path)),
@@ -229,23 +230,21 @@ class TestSelection:
         place(content_dir, "alpha_resume.md", "beta_resume.md")
         result = invoke(
             config_file,
-            "--content-dir",
+            "--resume",
             str(content_dir),
             input_text="9\n",
         )
         assert result.exit_code == 1
         assert "not one of the 2 resumes" in result.stdout
 
-    def test_an_explicit_resume_skips_discovery(
+    def test_an_explicit_resume_file_is_used_directly(
         self, config_file, content_dir, tmp_path
     ):
-        # The content directory is empty, which would otherwise be a hard error.
+        # A file is taken as given; only a directory triggers discovery.
         result = invoke(
             config_file,
             "--resume",
             str(CANONICAL),
-            "--content-dir",
-            str(content_dir),
             "--jd",
             str(jd_file(tmp_path)),
             "--output",
@@ -272,7 +271,7 @@ class TestSelection:
         assert result.exit_code == 1
         assert "not found" in result.stdout
         assert "Source resume: absent.md" not in result.stdout
-        assert "Loading source resume" not in result.stdout
+        assert "Loading canonical data" not in result.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -355,13 +354,13 @@ class TestJobDescriptionInput:
 
 class TestRunDirectories:
     def test_the_name_carries_the_resume_and_the_mode(self):
-        directory = run_directory(Path("content/backend_resume.md"), PlanningMode.STRICT)
+        directory = run_directory("backend_resume", PlanningMode.STRICT)
         assert directory.name.startswith("backend_strict_")
 
     def test_two_runs_do_not_collide(self, tmp_path):
         # A name carrying only resume and mode overwrites on re-run, leaving
         # the previous run's report beside the new run's PDF.
-        first = run_directory(Path("x_resume.md"), PlanningMode.AGGRESSIVE)
+        first = run_directory("x_resume", PlanningMode.AGGRESSIVE)
         assert "aggressive" in first.name
 
     def test_a_second_run_leaves_the_first_intact(
@@ -430,7 +429,7 @@ class TestSuccess:
                 str(tmp_path / "run"),
             )
         for label in (
-            "Loading source resume",
+            "Loading canonical data",
             "Analyzing job description",
             "Planning changes",
             "Generating resume",
@@ -909,3 +908,62 @@ class TestDelivery:
         assert str(tmp_path / "run") in result.stdout
         assert (tmp_path / "run" / "report.md").is_file()
         assert "Done." in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Elapsed time
+# ---------------------------------------------------------------------------
+
+
+class TestDuration:
+    @pytest.mark.parametrize(
+        "seconds, expected",
+        [
+            (0, "0s"),
+            (0.4, "0s"),
+            (9.6, "10s"),
+            (59, "59s"),
+            (60, "1m 0s"),
+            (134, "2m 14s"),
+            (3601, "60m 1s"),
+            (-5, "0s"),
+        ],
+    )
+    def test_a_duration_reads_as_minutes_and_seconds(self, seconds, expected):
+        assert format_duration(seconds) == expected
+
+    def test_a_successful_run_reports_how_long_it_took(self, config_file, tmp_path):
+        stub = stub_pipeline(result=compiled_result(tmp_path / "run" / "resume.pdf"))
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            result = invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+            )
+        assert result.exit_code == 0
+        assert "Time taken:" in result.stdout
+
+    def test_a_failing_run_reports_how_long_it_took(self, config_file, tmp_path):
+        # A run that spent minutes to fail is exactly when the number is worth
+        # having, and the failing branch exits before any later line prints.
+        stub = stub_pipeline(
+            result=make_pipeline_result(
+                quality=failing_result(), initial_quality=failing_result()
+            )
+        )
+        with patch("src.cli.tailor.ResumePipeline", stub):
+            result = invoke(
+                config_file,
+                "--resume",
+                str(CANONICAL),
+                "--jd",
+                str(jd_file(tmp_path)),
+                "--output",
+                str(tmp_path / "run"),
+            )
+        assert result.exit_code == 1
+        assert "Time taken:" in result.stdout
