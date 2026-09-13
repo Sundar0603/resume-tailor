@@ -16,11 +16,16 @@ from .conftest import make_resume
 
 
 class TestTheFloorValues:
-    """The floors themselves, as the user set them on 2026-08-31."""
+    """
+    The floors themselves, as the user set them on 2026-08-31, with project
+    bullets restored to 3 on 2026-09-13 once the template spacing pass and the
+    post-planning skill-category cap made that feasible again — all six live
+    runs reach one page at 3, against three of six when it was relaxed.
+    """
 
     def test_the_project_floors(self):
         assert floors.MIN_PROJECTS == 2
-        assert floors.PROJECT_BULLET_FLOOR == 2
+        assert floors.PROJECT_BULLET_FLOOR == 3
 
     def test_five_individual_skills_not_five_categories(self):
         assert floors.MIN_TOTAL_SKILLS == 5
@@ -68,7 +73,10 @@ class TestThePredicates:
     """Each floor expressed as a question the policy can ask."""
 
     def test_a_project_above_the_bullet_floor_may_lose_one(self):
-        resume = make_resume(project_bullets=(3, 2))
+        # One above the floor, one at it.
+        resume = make_resume(
+            project_bullets=(floors.PROJECT_BULLET_FLOOR + 1, floors.PROJECT_BULLET_FLOOR)
+        )
         assert floors.can_remove_project_bullet(resume.projects[0]) is True
         assert floors.can_remove_project_bullet(resume.projects[1]) is False
 

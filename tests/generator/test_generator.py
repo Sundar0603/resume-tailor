@@ -21,6 +21,7 @@ from src.generator import (
 )
 from src.parser.models import EntitySource
 from src.planner.models import PlanningMode
+from src.retrieval.selection import MAX_SKILL_CATEGORIES
 
 from .conftest import (
     FailingProvider,
@@ -247,6 +248,77 @@ class TestSkills:
             "skills_to_remove": [],
             "reasoning": "Already relevant.",
         }
+
+    def _generate_n(self, count):
+        """A plan that KEEPs both source categories and GENERATEs ``count`` more."""
+        made = [
+            {
+                "category_id": None,
+                "action": "GENERATE",
+                "priority": "LOW",
+                "new_category_name": "Minted {0}".format(i),
+                "skills_to_add": ["Skill {0}".format(i)],
+                "skills_to_remove": [],
+                "reasoning": "The job mentions it.",
+            }
+            for i in range(count)
+        ]
+        return self._skills_plan(
+            self._keep("skill_001"), self._keep("skill_002"), *made
+        )
+
+    def test_the_category_budget_is_enforced_after_planning(self):
+        # Retrieval caps selection at MAX_SKILL_CATEGORIES, but the Planner
+        # mints more with GENERATE afterwards. Nothing re-checked the total
+        # until this cap: the Microsoft SWE II run shipped eight categories,
+        # whose two extra rendered rows spilled the page and cost six project
+        # highlights and a whole project to the deletion policy.
+        result, _, _ = _generate([], plan=self._generate_n(6))
+        assert len(result.skills) == MAX_SKILL_CATEGORIES
+
+    def test_the_budget_drops_the_lowest_priority_categories(self):
+        # Truncation follows the Planner's own priority ranking, so the HIGH
+        # entry survives and the LOW ones past the budget are what go.
+        plan = self._skills_plan(
+            self._keep("skill_001"),
+            self._keep("skill_002"),
+            *[
+                {
+                    "category_id": None,
+                    "action": "GENERATE",
+                    "priority": "LOW",
+                    "new_category_name": "Low {0}".format(i),
+                    "skills_to_add": ["Skill {0}".format(i)],
+                    "skills_to_remove": [],
+                    "reasoning": "Marginal.",
+                }
+                for i in range(5)
+            ],
+            {
+                "category_id": None,
+                "action": "GENERATE",
+                "priority": "HIGH",
+                "new_category_name": "Critical",
+                "skills_to_add": ["Kubernetes"],
+                "skills_to_remove": [],
+                "reasoning": "The job leads with it.",
+            },
+        )
+        result, _, _ = _generate([], plan=plan)
+
+        names = [c.category for c in result.skills]
+        assert len(names) == MAX_SKILL_CATEGORIES
+        assert "Critical" in names
+        assert "Low 4" not in names
+
+    def test_a_resume_within_the_budget_is_untouched(self):
+        result, _, _ = _generate([], plan=self._generate_n(2))
+        assert len(result.skills) == 4
+
+    def test_dropped_categories_are_reported_not_silent(self):
+        _, generator, _ = _generate([], plan=self._generate_n(6))
+        dropped = [d for d in generator.last_discarded if "category budget" in d]
+        assert dropped
 
     def test_skills_never_call_the_model(self):
         plan = self._skills_plan(

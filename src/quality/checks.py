@@ -81,6 +81,21 @@ RULE_MIN_WIDTH_RATIO = 0.5
 # The heading sits immediately above its rule.
 HEADING_SEARCH_POINTS = 14.0
 
+#: How much clear paper must remain below the last line of page one.
+#:
+#: "One page" was page-count deep: ``overflow_line_count`` counts lines on page
+#: two and later (see ``page.page_number > 1`` below), so content that ran off
+#: the *bottom of page one* was invisible to the gate and to the trim loop that
+#: reads it. LaTeX does not object either -- ``\raggedbottom`` plus the
+#: template's negative struts mean no Overfull \vbox is ever reported. The
+#: Microsoft SWE II run shipped with its certifications bullet sliced through
+#: the middle of the glyphs and the gate recorded ``passed: true, spill: 0``.
+#:
+#: 14pt is just inside the non-printable bottom band of a typical office laser
+#: printer (0.16-0.25in, i.e. 12-18pt). Below it a line is cut on paper even
+#: though every PDF viewer shows it intact.
+MIN_BOTTOM_MARGIN_POINTS = 14.0
+
 _SECTION_BY_STRIPPED = {
     section.value.replace(" ", ""): section
     for section in ResumeSection
@@ -381,3 +396,22 @@ def measure_overflow(
 
     overflowing.sort(key=lambda section: section.value)
     return overflow_lines, overflow_height, overflowing, per_section
+
+
+def bottom_margin(pages) -> float:
+    """
+    Clear paper below the last line of the final page, in points.
+
+    pdfminer measures ``y0`` up from the bottom edge, so the smallest ``y0`` on
+    the page *is* the margin. Rules are included: a section rule below the last
+    line of text is just as cut as the text would be. An empty page cannot be
+    too full, so it reports its own full height.
+    """
+    if not pages:
+        return 0.0
+    page = pages[-1]
+    floors = [line.y0 for line in page.lines]
+    floors.extend(rule.y0 for rule in getattr(page, "rules", []))
+    if not floors:
+        return float(page.height)
+    return max(0.0, min(floors))

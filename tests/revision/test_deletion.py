@@ -84,7 +84,8 @@ class TestTheProjectBulletFloor:
     def test_a_project_is_trimmed_down_to_the_floor(self):
         resume = make_resume(project_bullets=(4, 4), skill_sizes=(2, 2, 1), fulltime_bullets=5)
         final = _run_to_exhaustion(resume)
-        assert [len(p.highlights) for p in final.projects] == [2, 2]
+        floor = floors.PROJECT_BULLET_FLOOR
+        assert [len(p.highlights) for p in final.projects] == [floor, floor]
 
     def test_every_project_reaches_the_floor_before_any_is_removed(self):
         # The task doc's wording is global. Trimming per-project instead would

@@ -31,6 +31,7 @@ from src.parser.models import (
     Resume,
     SkillCategory,
 )
+from src.retrieval.selection import MAX_SKILL_CATEGORIES
 from src.validation import ResumeValidator
 from src.validation.models import ValidationIssue
 
@@ -404,6 +405,28 @@ class ResumeGenerator:
         # meet the one-page constraint. sorted() is stable, so categories of
         # equal priority keep their plan order.
         ordered.sort(key=lambda pair: int(pair[0]))
+
+        # Enforce the category budget. Retrieval applies MAX_SKILL_CATEGORIES
+        # when it selects (``retriever.py``), but the Planner mints categories
+        # *after* that with GENERATE, and until this cap existed nothing
+        # re-checked the total. The removal_budget above is one-directional --
+        # it stops the list shrinking for nothing, not growing -- so the count
+        # could only ratchet up. Measured on the Microsoft SWE II run: six
+        # retrieved categories became eight, two extra rendered rows (~27pt)
+        # spilled the page by 20pt, and the deletion policy's documented order
+        # (Projects -> Skills -> Experience) paid for it out of projects,
+        # deleting six highlights and one whole project while the categories
+        # that caused the spill survived untouched.
+        #
+        # Truncating after the sort drops the lowest-priority categories, which
+        # is the Planner's own relevance ranking, not a second opinion on it.
+        if len(ordered) > MAX_SKILL_CATEGORIES:
+            for _, category in ordered[MAX_SKILL_CATEGORIES:]:
+                self.last_discarded.append(
+                    f"skill category {category.id} ({category.category!r}): "
+                    f"dropped — over the {MAX_SKILL_CATEGORIES}-category budget"
+                )
+            ordered = ordered[:MAX_SKILL_CATEGORIES]
 
         # Order the skills *inside* every category here rather than on each
         # path that produces one. KEEP, a cancelled removal and a cancelled

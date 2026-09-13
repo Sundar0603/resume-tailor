@@ -27,6 +27,7 @@ class QualityIssueCode(str, Enum):
     ORPHAN_WORD = "ORPHAN_WORD"
     RULE_TEXT_COLLISION = "RULE_TEXT_COLLISION"
     BULLET_SPACING_ANOMALY = "BULLET_SPACING_ANOMALY"
+    CONTENT_BELOW_BOTTOM_MARGIN = "CONTENT_BELOW_BOTTOM_MARGIN"
 
 
 class QualitySeverity(str, Enum):
@@ -108,6 +109,7 @@ SEVERITY_BY_CODE: Dict[QualityIssueCode, QualitySeverity] = {
     QualityIssueCode.MISSING_GLYPH: QualitySeverity.ERROR,
     QualityIssueCode.TEXT_OVERLAP: QualitySeverity.ERROR,
     QualityIssueCode.RULE_TEXT_COLLISION: QualitySeverity.ERROR,
+    QualityIssueCode.CONTENT_BELOW_BOTTOM_MARGIN: QualitySeverity.ERROR,
     QualityIssueCode.ORPHAN_WORD: QualitySeverity.WARNING,
     QualityIssueCode.BULLET_SPACING_ANOMALY: QualitySeverity.WARNING,
 }

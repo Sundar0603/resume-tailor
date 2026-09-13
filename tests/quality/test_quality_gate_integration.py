@@ -27,12 +27,17 @@ pytestmark = pytest.mark.skipif(
 BROKEN_FIXTURE = "tests/fixtures/latex/overlapping_bullets.tex"
 CANONICAL = "content/backend_resume.md"
 
-# A canonical that still runs past one page, so the page-count and overflow
-# paths keep a real fixture. backend_resume.md used to serve that role: it
-# spilled a single line onto page two, and the \resumeItem stray-space fix --
-# which removed the phantom empty lines that were padding it -- pulled that
-# line back. Same 60 text lines before and after, so nothing was dropped.
-OVERFLOWING = "content/cybersecurity_resume.md"
+# A resume that still runs past one page, so the page-count and overflow paths
+# keep a real fixture. Twice now a real content file has been promoted out of
+# this role by a layout fix rather than by losing content: backend_resume.md
+# first (the \resumeItem stray-space fix removed the phantom empty lines that
+# were padding it, pulling its one spilled line back), then
+# cybersecurity_resume.md (the template spacing pass -- tighter \topmargin,
+# section and bullet spacing -- took it from 2 pages to 1, at 62 text lines).
+# Hence a purpose-built fixture: padding highlights, no content file to outgrow
+# it again. If a future layout change makes even this fit, add more padding
+# rather than pointing OVERFLOWING back at a real resume.
+OVERFLOWING = "tests/fixtures/overflowing_resume.md"
 
 
 def compile_source(latex, tmp_path, name="resume"):

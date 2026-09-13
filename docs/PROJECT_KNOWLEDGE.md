@@ -1674,13 +1674,46 @@ which remain the hard backstop.
 | unit | minimum |
 |---|---|
 | projects | 2 |
-| bullets per project | 2, then the project goes whole |
+| bullets per project | **3** (was 2 — see below), then the project goes whole |
 | individual skills, total | 5 |
 | protected leading skill categories | 1 (highest priority, never trimmed) |
 | internship bullets | 3 |
 | full-time bullets | 5 |
 | work experiences | exactly 2 |
 | bullets in any entity | 1, independent of every other floor |
+
+**Project bullets restored to 3 — 2026-09-13.** The 2026-08-31 relaxation from
+3 to 2 was a page-budget verdict, not a judgement that two bullets describe a
+project well; §10f's tight floors were dropped because three of six live runs
+could not reach one page under them. Two later changes moved that budget:
+
+- the template spacing pass (`\topmargin` −.7in → −.8in with `\textheight`
+  +1.4in → +1.55in, plus tighter section, subheading, bullet and separator
+  spacing) freed roughly 28pt, and stopped resumes rendering flush to the paper
+  edge — three of the shipped templates had a 0-4pt bottom margin, i.e. a last
+  line inside every printer's non-printable band;
+- `MAX_SKILL_CATEGORIES` is now enforced *after* planning as well as at
+  retrieval. It had been applied only when selecting, while the Planner minted
+  further categories with `GENERATE` afterwards and nothing re-checked the
+  total, so the count could only ratchet up. The Microsoft SWE II run shipped
+  eight categories against a declared budget of six; the two extra rendered rows
+  spilled the page by 20pt, and this policy's Projects-before-Skills order paid
+  for that spill out of projects — six highlights and one whole project deleted
+  while the categories that caused the spill were never candidates.
+
+All six live runs were re-measured under both changes: **6/6 reach one page at a
+floor of 3**, against 3/6 when it was relaxed. The trade is real and intended —
+two of the six now ship two projects with three bullets each where they
+previously shipped three with two. A project described in two bullets is close
+to not being described at all, so fuller projects are the better buy.
+
+Note what this does *not* change: the removal order is still
+`Projects → Skills → Experience`, so skills are reached only once every project
+sits at the floor. Raising the floor is what lifts project bullets here; an
+overflow still cannot be charged to a bloated skills section ahead of project
+content. Measured on the Microsoft run, a skills-first order would have
+delivered 3 projects at [4, 3, 2] — but by collapsing skills to a single
+category, which is worse for ATS keyword matching than losing a bullet.
 
 ### Decide and apply are separate, and that is what makes it testable
 

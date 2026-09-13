@@ -26,6 +26,8 @@ from src.compiler.exceptions import CompilationFailedError
 from src.compiler.models import CompilationResult
 
 from .checks import (
+    MIN_BOTTOM_MARGIN_POINTS,
+    bottom_margin,
     find_bullet_spacing_anomalies,
     find_orphans,
     find_overlaps,
@@ -108,7 +110,10 @@ class QualityGate:
         overflow_lines, overflow_height, overflowing, per_section = measure_overflow(
             pages
         )
-        issues.extend(self._stage_two(overlaps, orphans, collisions, bullet_gaps))
+        margin = bottom_margin(pages)
+        issues.extend(
+            self._stage_two(overlaps, orphans, collisions, bullet_gaps, margin)
+        )
 
         metrics = QualityMetrics(
             page_count=page_count,
@@ -242,10 +247,26 @@ class QualityGate:
         ]
 
     def _stage_two(
-        self, overlaps, orphans, collisions, bullet_gaps
+        self, overlaps, orphans, collisions, bullet_gaps, margin
     ) -> List[QualityIssue]:
         """Findings that need rendered geometry."""
         issues: List[QualityIssue] = []
+        if margin < MIN_BOTTOM_MARGIN_POINTS:
+            issues.append(
+                QualityIssue(
+                    code=QualityIssueCode.CONTENT_BELOW_BOTTOM_MARGIN,
+                    severity=SEVERITY_BY_CODE[
+                        QualityIssueCode.CONTENT_BELOW_BOTTOM_MARGIN
+                    ],
+                    stage=QualityStage.STAGE_2,
+                    message=(
+                        "Only {0:.1f}pt of clear paper below the last line; "
+                        "{1:.1f}pt required. A page that ends this low is cut "
+                        "by the printer even though viewers show it whole."
+                    ).format(margin, MIN_BOTTOM_MARGIN_POINTS),
+                    magnitude=MIN_BOTTOM_MARGIN_POINTS - margin,
+                )
+            )
         for upper, lower, ink in overlaps:
             issues.append(
                 QualityIssue(

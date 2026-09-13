@@ -17,11 +17,22 @@ skills-per-category 2). Those were measured infeasible — three of six live run
 could not reach one page under them — so they were deliberately relaxed. The
 supersession is recorded in §10h.
 
+**Project bullets restored to 3 on 2026-09-13.** The 2026-08-31 relaxation was
+a page-budget verdict, not a content one, and the budget has since changed: the
+template spacing pass (tighter ``\topmargin``, section, subheading and bullet
+spacing) freed roughly 28pt, and the Generator's skill categories are now capped
+at ``MAX_SKILL_CATEGORIES`` after planning instead of ratcheting past it. Both
+of the same six live runs were re-measured under those conditions and all six
+reach one page at a floor of 3, against three of six before. The trade is
+visible and intended: two runs now ship two projects with three bullets each
+where they previously shipped three projects with two, the deletion policy
+preferring fuller projects over thinner ones.
+
 +------------------------------+-----------+
 | unit                         |   minimum |
 +==============================+===========+
 | projects                     |         2 |
-| bullets per project          |         2 |
+| bullets per project          |         3 |
 | individual skills, total     |         5 |
 | internship bullets           |         3 |
 | full-time experience bullets |         5 |
@@ -40,7 +51,7 @@ from src.parser.models import Experience, Project, Resume, SkillCategory
 MIN_PROJECTS = 2
 
 #: A project is trimmed bullet-by-bullet down to this count, then removed whole.
-PROJECT_BULLET_FLOOR = 2
+PROJECT_BULLET_FLOOR = 3
 
 #: Individual skills across every category — five actual skills, not five
 #: categories. There is deliberately no per-category floor: a category is
